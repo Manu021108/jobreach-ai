@@ -1,0 +1,2 @@
+company_name,email,hr_name,role,company_context,job_url,source_url,location,notes
+Example Technologies,careers@example.com,Recruitment Team,Python Developer,"Verified context: builds enterprise workflow software; this text was entered by me.",https://example.com/careers,https://example.com,Hyderabad,"Use only if this is a relevant and valid contact"

@@ -1,0 +1,16 @@
+.env
+.venv/
+env/
+.streamlit/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+credentials/
+data/*
+!data/companies_template.csv
+logs/
+resumes/*
+!resumes/.gitkeep
+.DS_Store
