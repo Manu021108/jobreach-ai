@@ -208,7 +208,9 @@ function VerificationPanel({ user, initialToken = "", onVerified }) {
 }
 
 function App() {
-  const [page, setPage] = useState("overview");
+  const query = new URLSearchParams(window.location.search);
+  const gmailNotice = query.get("gmail");
+  const [page, setPage] = useState(gmailNotice ? "settings" : "overview");
   const [dashboard, setDashboard] = useState(null);
   const [contacts, setContacts] = useState([]);
   const [drafts, setDrafts] = useState([]);
@@ -219,7 +221,6 @@ function App() {
   const [error, setError] = useState("");
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
-  const query = new URLSearchParams(window.location.search);
   const authStart = {
     mode: query.get("reset") ? "reset-confirm" : "login",
     token: query.get("verify") || query.get("reset") || "",
@@ -230,6 +231,12 @@ function App() {
       .then(setUser)
       .catch(() => setUser(null))
       .finally(() => setAuthReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (gmailNotice === "connected") setNotice("Gmail connected for your account.");
+    if (gmailNotice === "error") setNotice(query.get("detail") || "Gmail connection failed. Please try again.");
+    if (gmailNotice) window.history.replaceState({}, document.title, window.location.pathname);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -834,6 +841,12 @@ function SettingsPage({ settings, busy, run }) {
     const result = await run(() => api("/settings/test-ai", { method: "POST" }), (d) => `AI connection successful: ${d.response}`, false);
     if (result) setTestResult(result.response);
   };
+  const connectGmail = async () => {
+    const result = await run(() => api("/gmail/oauth/start"), "Opening Google authorization…", false);
+    if (result?.authorization_url) window.location.assign(result.authorization_url);
+  };
+  const disconnectGmail = () => run(() => api("/gmail/disconnect", { method: "POST" }), "Gmail disconnected.");
+  const gmailConnected = Boolean(settings?.gmail_connected);
   return (
     <>
       <PageHeading eyebrow="Local configuration" title="Settings & integrations" description="Manage your profile, resume, and connected services." />
@@ -864,8 +877,17 @@ function SettingsPage({ settings, busy, run }) {
           <div className="integration-divider" />
           <div className="panel-header" style={{ marginBottom: 8 }}><div><h2 className="section-heading">Gmail connection</h2><p className="panel-subtitle">OAuth connection for one-at-a-time sending</p></div></div>
           <div className="integration-row">
-            <div><strong>Google Gmail API</strong><span>OAuth client: credentials/client_secret.json</span></div>
-            <button className="button button-secondary" disabled={busy} onClick={() => run(() => api("/settings/gmail", { method: "POST" }), "Gmail OAuth connection successful.")}>Connect Gmail</button>
+            <div>
+              <strong>Google Gmail API</strong>
+              <span>{gmailConnected ? `Connected as ${settings?.gmail_email || "your Google account"}` : "Not connected"}</span>
+            </div>
+            <div className="gmail-actions">
+              <span className={gmailConnected && !settings?.gmail_needs_reconnect ? "status-ok" : "status-warn"}>
+                {gmailConnected ? (settings?.gmail_needs_reconnect ? "Reconnect needed" : "Connected") : "Not connected"}
+              </span>
+              <button className="button button-secondary" disabled={busy} onClick={connectGmail}>{gmailConnected ? "Reconnect" : "Connect Gmail"}</button>
+              {gmailConnected && <button className="button button-ghost" disabled={busy} onClick={disconnectGmail}>Disconnect</button>}
+            </div>
           </div>
         </section>
 

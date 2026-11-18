@@ -1,6 +1,8 @@
+import hmac
 import io
 import re
 import threading
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +10,7 @@ from typing import Literal
 
 import pandas as pd
 from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -18,9 +20,17 @@ from app.config import settings
 from app.db.models import Contact, OutreachEvent, User
 from app.db.session import SessionLocal, init_db
 from app.services import auth as auth_service
+from app.services import gmail_service, gmail_tokens
 from app.services.ai_writer import AIWriter
-from app.services.security import SESSION_MAX_AGE, make_session, read_session
 from app.services.gmail_service import GmailService
+from app.services.security import (
+    OAUTH_STATE_MAX_AGE,
+    SESSION_MAX_AGE,
+    make_oauth_state,
+    make_session,
+    read_oauth_state,
+    read_session,
+)
 from app.services.job_discovery import discover_jobs
 from app.services.job_matcher import match_job
 from app.services.outreach import (
@@ -339,6 +349,57 @@ def reset_confirm(payload: ResetPasswordInput):
     return {"message": "Password updated. Sign in with your new password."}
 
 
+@app.get("/api/gmail/oauth/start")
+def gmail_oauth_start(user: User = Depends(get_current_user)):
+    try:
+        state = make_oauth_state(user.id)
+        authorization_url = gmail_service.authorization_url(state)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    response = JSONResponse({"authorization_url": authorization_url})
+    response.set_cookie(
+        "jr_gmail_state", state, max_age=OAUTH_STATE_MAX_AGE,
+        httponly=True, samesite="lax", secure=settings.auth_cookie_secure, path="/",
+    )
+    return response
+
+
+@app.get("/api/gmail/oauth/callback")
+def gmail_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    jr_gmail_state: str | None = Cookie(default=None, alias="jr_gmail_state"),
+    user: User = Depends(get_current_user),
+):
+    expected_user = read_oauth_state(state) if state else None
+    if (
+        error
+        or not code
+        or not state
+        or expected_user is None
+        or expected_user != user.id
+        or not jr_gmail_state
+        or not hmac.compare_digest(state, jr_gmail_state)
+    ):
+        detail = error or "Invalid or expired Gmail authorization request."
+        return RedirectResponse(f"/?gmail=error&detail={quote(str(detail)[:200])}", status_code=303)
+    try:
+        credentials, email = gmail_service.complete_oauth(code)
+        gmail_tokens.save_credentials(user.id, credentials, email)
+    except Exception as exc:
+        return RedirectResponse(f"/?gmail=error&detail={quote(str(exc)[:200])}", status_code=303)
+    response = RedirectResponse("/?gmail=connected", status_code=303)
+    response.delete_cookie("jr_gmail_state", path="/")
+    return response
+
+
+@app.post("/api/gmail/disconnect")
+def gmail_disconnect(user: User = Depends(get_current_user)):
+    gmail_tokens.delete_credentials(user.id)
+    return {"ok": True}
+
+
 @app.get("/api/dashboard")
 def dashboard(user: User = Depends(get_current_user)):
     return {
@@ -565,7 +626,7 @@ def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depen
         if not resume:
             raise HTTPException(status_code=409, detail="Upload a PDF resume in Settings before sending.")
         try:
-            response = GmailService().connect().send(
+            response = GmailService(user.id).connect().send(
                 draft.contact.email, draft.subject, draft.body, resume,
             )
             mark_sent(draft.id, response.get("id", ""), response.get("threadId", ""), owner_id=user.id)
@@ -596,7 +657,7 @@ def review_followup(event_id: int, user: User = Depends(get_current_user)):
 @app.post("/api/replies/sync")
 def sync_replies(user: User = Depends(get_current_user)):
     try:
-        count = sync_replies_best_effort(GmailService().connect(), user.id)
+        count = sync_replies_best_effort(GmailService(user.id).connect(), user.id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Reply sync failed: {exc}") from exc
     return {"updated": count}
@@ -605,6 +666,7 @@ def sync_replies(user: User = Depends(get_current_user)):
 @app.get("/api/settings")
 def get_settings(user: User = Depends(get_current_user)):
     resume = _resume_path()
+    gmail_status = gmail_tokens.connection_status(user.id)
     return {
         "app_name": settings.app_name,
         "sender_name": settings.sender_name,
@@ -619,6 +681,10 @@ def get_settings(user: User = Depends(get_current_user)):
         "max_emails_per_day": settings.max_emails_per_day,
         "min_seconds_between_emails": settings.min_seconds_between_emails,
         "resume_name": resume.name if resume else None,
+        "gmail_connected": gmail_status["connected"],
+        "gmail_email": gmail_status["email"],
+        "gmail_expires_at": gmail_status["expires_at"],
+        "gmail_needs_reconnect": gmail_status["needs_reconnect"],
     }
 
 
@@ -644,11 +710,7 @@ async def upload_resume(file: UploadFile = File(...), user: User = Depends(get_c
 
 @app.post("/api/settings/gmail")
 def connect_gmail(user: User = Depends(get_current_user)):
-    try:
-        GmailService().connect()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Gmail connection failed: {exc}") from exc
-    return {"ok": True}
+    return gmail_oauth_start(user)
 
 
 @app.post("/api/settings/test-ai")

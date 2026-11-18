@@ -27,6 +27,23 @@ class User(Base):
     drafts: Mapped[list["EmailDraft"]] = relationship(back_populates="user")
     jobs: Mapped[list["JobPosting"]] = relationship(back_populates="user")
     events: Mapped[list["OutreachEvent"]] = relationship(back_populates="user")
+    gmail_connection: Mapped["GmailConnection | None"] = relationship(
+        back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class GmailConnection(Base):
+    __tablename__ = "gmail_connections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    encrypted_credentials: Mapped[str] = mapped_column(Text, nullable=False)
+    scopes: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    needs_reconnect: Mapped[bool] = mapped_column(Boolean, default=False)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    user: Mapped["User"] = relationship(back_populates="gmail_connection")
 
 
 class Contact(Base):

@@ -41,14 +41,15 @@ Edit `.env` with your real profile details. Place your resume PDF in `resumes/` 
 
 1. Open https://console.cloud.google.com/ and create/select a Google Cloud project.
 2. Enable **Gmail API**.
-3. Configure Google Auth Platform / OAuth consent screen. For a personal project, configure the appropriate external/test-user settings if required and add your Gmail account as a test user while the app is in testing.
-4. Create an OAuth Client ID with application type **Desktop app**.
+3. Configure Google Auth Platform / OAuth consent screen. For a personal project, configure the appropriate external/test-user settings if required and add each Gmail account as a test user while the app is in testing.
+4. Create an OAuth Client ID with application type **Web application**. Add `http://127.0.0.1:8000/api/gmail/oauth/callback` to **Authorized redirect URIs** (change the host/port if you change `GMAIL_OAUTH_REDIRECT_URI`).
 5. Download the client JSON and save it as `credentials/client_secret.json`.
-6. Start the app and choose **Connect Gmail** in Settings. A browser opens for consent. Token is saved locally at `credentials/token.json`.
+6. Set `GMAIL_TOKEN_ENCRYPTION_KEY` (or `AUTH_SECRET_KEY`) in `.env` to a long random value. Changing it later makes existing tokens unreadable, so affected users must reconnect.
+7. Start the app, sign in, and choose **Connect Gmail** in Settings. Google redirects back to the app and Settings shows the connected Google account.
 
-The app requests `gmail.send` and `gmail.readonly` to send mail and optionally inspect inbox messages for replies. If you change scopes, delete the local token and authorize again. Google may require OAuth verification for broader/public distribution; do not distribute your client secret or token.
+The app requests `gmail.send` and `gmail.readonly` to send mail and optionally inspect inbox messages for replies. Each user's OAuth credentials are encrypted in the application database and are never written to a shared token file. Access tokens are refreshed automatically; if Google revokes access, Settings shows **Reconnect needed**. If you change scopes, disconnect and authorize again. Google may require OAuth verification for broader/public distribution; do not distribute your client secret or encryption key.
 
-Official guide: https://developers.google.com/workspace/gmail/api/quickstart/python
+Official guide: https://developers.google.com/identity/protocols/oauth2/web-server
 
 ## 4. AI setup
 
@@ -89,7 +90,7 @@ npm run dev
 
 Open the local URL Vite prints. The Vite development server proxies API calls to `127.0.0.1:8000`. For a production-style local build, run `npm run build` in `frontend`, then start the API; FastAPI serves the built UI from `frontend/dist`.
 
-The API deliberately binds to loopback. Do not expose it on a public interface: it has no user authentication and can access local files and Gmail OAuth credentials.
+The API deliberately binds to loopback. Do not expose it publicly without HTTPS, trusted-host configuration, and a Web OAuth client: it can access local files and connected Gmail accounts.
 
 ## 6. Import spreadsheet format
 
@@ -127,7 +128,7 @@ pytest -q
 
 ## 10. Deployment guidance
 
-Run locally for the first version. Do not expose this app publicly without authentication. For a shared deployment, replace SQLite with PostgreSQL, add user authentication and role-based access, store OAuth tokens in encrypted secret storage, use a managed background worker/queue, configure HTTPS, implement audit logs and backups, and review Google's OAuth verification requirements.
+Run locally for the first version. Do not expose this app publicly without HTTPS and a trusted-host configuration. For a shared deployment, replace SQLite with PostgreSQL, add role-based access, keep the token encryption key in a managed secret store, use a managed background worker/queue, implement audit logs and backups, and review Google's OAuth verification requirements.
 
 ## 11. Efficiency roadmap
 

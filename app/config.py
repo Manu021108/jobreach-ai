@@ -24,8 +24,9 @@ class Settings(BaseSettings):
     ai_api_key: str = "ollama"
     ai_temperature: float = Field(default=0.4, ge=0, le=1)
     gmail_client_secret_file: str = "credentials/client_secret.json"
-    gmail_token_file: str = "credentials/token.json"
     gmail_scopes: str = "https://www.googleapis.com/auth/gmail.send,https://www.googleapis.com/auth/gmail.readonly"
+    gmail_oauth_redirect_uri: str = "http://127.0.0.1:8000/api/gmail/oauth/callback"
+    gmail_token_encryption_key: str = ""
     dry_run: bool = True
     max_emails_per_run: int = Field(default=5, ge=1, le=25)
     min_seconds_between_emails: int = Field(default=45, ge=10, le=3600)

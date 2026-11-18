@@ -9,6 +9,7 @@ from app.config import settings
 
 SECRET_KEY = settings.auth_secret_key or secrets.token_urlsafe(48)
 SESSION_MAX_AGE = settings.auth_session_days * 24 * 60 * 60
+OAUTH_STATE_MAX_AGE = 10 * 60
 
 
 def hash_password(password):
@@ -47,14 +48,13 @@ def _decode(value):
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
-def make_session(user_id):
-    payload = {"uid": int(user_id), "exp": int(time.time()) + SESSION_MAX_AGE}
+def _sign_payload(payload):
     body = _encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     signature = _encode(hmac.new(SECRET_KEY.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest())
     return f"{body}.{signature}"
 
 
-def read_session(token):
+def _read_signed(token):
     try:
         body, signature = str(token or "").split(".", 1)
         expected = _encode(hmac.new(SECRET_KEY.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest())
@@ -66,3 +66,24 @@ def read_session(token):
         return int(payload["uid"])
     except Exception:
         return None
+
+
+def make_session(user_id):
+    return _sign_payload({"uid": int(user_id), "exp": int(time.time()) + SESSION_MAX_AGE})
+
+
+def read_session(token):
+    return _read_signed(token)
+
+
+def make_oauth_state(user_id):
+    payload = {
+        "uid": int(user_id),
+        "exp": int(time.time()) + OAUTH_STATE_MAX_AGE,
+        "nonce": secrets.token_hex(8),
+    }
+    return _sign_payload(payload)
+
+
+def read_oauth_state(token):
+    return _read_signed(token)

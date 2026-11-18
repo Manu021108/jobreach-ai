@@ -508,6 +508,10 @@ select { cursor: pointer; }
 .resume-meta strong, .integration-row strong { display: block; font-size: 12px; font-weight: 600; }
 .resume-meta span, .integration-row span { display: block; margin-top: 1px; font-size: 12px; color: var(--color-text-secondary); }
 .status-ok { color: var(--color-success); font-weight: 700; } .status-warn { color: var(--color-warning); font-weight: 700; }
+.gmail-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+.integration-row .gmail-actions > span { margin-top: 0; }
+.integration-row .gmail-actions > span.status-ok { color: var(--color-success); }
+.integration-row .gmail-actions > span.status-warn { color: var(--color-warning); }
 .resume-upload { display: flex; gap: 8px; align-items: center; }
 .resume-upload input { font-size: 12px; color: var(--color-text-secondary); }
 .integration-divider { height: 1px; background: var(--color-border); margin: 11px 0; }
