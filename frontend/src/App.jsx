@@ -479,7 +479,7 @@ function JobMatch({ contacts, busy, run, onNavigate }) {
                 <button className="button button-secondary full-button" disabled={busy} onClick={score}>Match my skills</button>
                 {match && (
                   <div className="match-block">
-                    <div className="match-top"><strong>{match.score}% match</strong><span>based on your Python, AI/ML and data engineering profile</span></div>
+                    <div className="match-top"><strong>{match.score}% match</strong><span>based on your configured skills and target roles</span></div>
                     <div className="progress-track"><div style={{ width: `${match.score}%` }} /></div>
                     <div className="skill-tags">{match.matched.map((skill) => <span className="skill-tag" key={skill}>{skill}</span>)}{match.missing.map((skill) => <span className="skill-tag skill-tag-miss" key={skill}>{skill}</span>)}</div>
                     <p className="fine-print">{match.reasons.join(" · ")}</p>

@@ -12,6 +12,12 @@ SKILL_GROUPS = {
         r"data engineer", r"\betl\b", r"\bairflow\b", r"\bspark\b", r"\bkafka\b",
         r"data pipeline", r"data warehouse", r"\bsql\b", r"snowflake", r"bigquery",
     ],
+    "Full-Stack/Web": [
+        r"full[ -]?stack", r"web developer", r"web development", r"website",
+        r"front[ -]?end", r"back[ -]?end", r"\breact\b", r"react native",
+        r"\bjavascript\b", r"\btypescript\b", r"\bhtml\b", r"\bcss\b",
+        r"\bdjango\b", r"\bfastapi\b", r"\bstreamlit\b",
+    ],
 }
 
 
