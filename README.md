@@ -5,6 +5,7 @@ A local-first, multi-user job outreach CRM built with FastAPI, React, SQLite, Gm
 ## Safety model
 
 - Emails are sent one recipient at a time. No CC/BCC bulk blast.
+- The campaign builder can generate drafts in batches, but each email is still reviewed, approved, queued, and sent individually.
 - New contacts are imported as **Pending**; generated messages are **Draft** until explicitly approved.
 - `DRY_RUN=true` is the default. Sending is disabled until you deliberately set `DRY_RUN=false`.
 - Each send requires explicit approval, a reviewed-recipient checkbox, and typing the exact recipient address. A daily cap, per-run cap, and send interval are enforced by the API.
@@ -69,6 +70,10 @@ Set these values in `.env`:
 Configure Stripe to send checkout events to `https://your-host/api/billing/webhook`. The endpoint verifies the `stripe-signature` header against the raw request body, records processed event IDs to prevent duplicate activation, activates access on a completed paid checkout session, and revokes access when the payment is fully refunded. Keep the webhook secret out of the frontend and never trust a browser redirect as proof of payment.
 
 For local development, Stripe CLI can forward signed events to `http://127.0.0.1:8000/api/billing/webhook`. Use the printed webhook signing secret for `STRIPE_WEBHOOK_SECRET`.
+
+## 3.3 Campaign builder
+
+The **Campaign & Send** page lets you select up to 50 eligible contacts, generate one AI draft per contact, approve drafts in bulk, and queue approved drafts. Queued drafts are not sent automatically: choose each draft in the review panel, preview the payload, confirm the recipient, and send it individually. Editing an approved draft resets it to **Draft** and requires re-approval.
 
 ## 4. AI setup
 

@@ -115,6 +115,39 @@ class ProcessedWebhookEvent(Base):
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="DRAFT", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    user: Mapped["User"] = relationship()
+    entries: Mapped[list["CampaignContact"]] = relationship(
+        back_populates="campaign", cascade="all, delete-orphan"
+    )
+
+
+class CampaignContact(Base):
+    __tablename__ = "campaign_contacts"
+    __table_args__ = (UniqueConstraint("campaign_id", "contact_id", name="uq_campaign_contact"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), nullable=False, index=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), nullable=False, index=True)
+    draft_id: Mapped[int | None] = mapped_column(ForeignKey("email_drafts.id"), nullable=True, index=True)
+    state: Mapped[str] = mapped_column(String(30), default="PENDING", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    campaign: Mapped["Campaign"] = relationship(back_populates="entries")
+    contact: Mapped["Contact"] = relationship()
+    draft: Mapped["EmailDraft | None"] = relationship()
+
+
 class Contact(Base):
     __tablename__ = "contacts"
     __table_args__ = (UniqueConstraint("owner_id", "email", "company_name", name="uq_contact_owner_email_company"),)

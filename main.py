@@ -22,6 +22,7 @@ from app.db.models import Contact, OutreachEvent, User
 from app.db.session import SessionLocal, init_db
 from app.services import auth as auth_service
 from app.services import billing as billing_service
+from app.services import campaign as campaign_service
 from app.services import gmail_service, gmail_tokens, hr_database, profile_service
 from app.services.ai_writer import AIWriter
 from app.services.gmail_service import GmailService
@@ -97,6 +98,14 @@ class DraftInput(BaseModel):
 class SendConfirmation(BaseModel):
     reviewed: bool
     typed_recipient: str
+
+
+class CampaignGenerateInput(BaseModel):
+    contact_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+class CampaignApproveInput(BaseModel):
+    draft_ids: list[int] = Field(min_length=1, max_length=50)
 
 
 class RegisterInput(BaseModel):
@@ -594,6 +603,45 @@ def create_job_draft(job_id: int, payload: DraftInput, user: User = Depends(get_
     return {"id": draft_id}
 
 
+@app.get("/api/campaigns")
+def campaigns(user: User = Depends(get_current_user)):
+    return campaign_service.list_campaigns(user.id)
+
+
+@app.post("/api/campaigns/generate")
+def generate_campaign_drafts(payload: CampaignGenerateInput, user: User = Depends(get_current_user)):
+    try:
+        return campaign_service.generate_drafts(
+            user.id,
+            payload.contact_ids,
+            profile_service.ai_profile(user.id),
+            _resume_filename(user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/campaigns/{campaign_id}/approve")
+def approve_campaign_drafts(
+    campaign_id: int,
+    payload: CampaignApproveInput,
+    user: User = Depends(get_current_user),
+):
+    try:
+        return campaign_service.approve_drafts(campaign_id, user.id, payload.draft_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/campaigns/{campaign_id}/queue")
+def queue_campaign(campaign_id: int, user: User = Depends(get_current_user)):
+    try:
+        return campaign_service.queue_campaign(campaign_id, user.id)
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
 @app.post("/api/contacts/{contact_id}/generate")
 def generate_draft(contact_id: int, payload: CompanyContextUpdate, user: User = Depends(get_current_user)):
     with SessionLocal() as db:
@@ -634,6 +682,7 @@ def edit_draft(draft_id: int, payload: DraftInput, user: User = Depends(get_curr
         update_draft(draft_id, payload.subject, payload.body, user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    campaign_service.sync_draft_state(draft_id, user.id, "DRAFT")
     return {"ok": True}
 
 
@@ -644,6 +693,7 @@ def approve_email_draft(draft_id: int, user: User = Depends(get_current_user)):
         approve_draft(draft_id, user.id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    campaign_service.sync_draft_state(draft_id, user.id, "APPROVED")
     return {"ok": True}
 
 
@@ -687,8 +737,10 @@ def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depen
                 sender_name=profile_service.profile_dict(user.id)["full_name"],
             )
             mark_sent(draft.id, response.get("id", ""), response.get("threadId", ""), owner_id=user.id)
+            campaign_service.sync_draft_state(draft.id, user.id, "SENT")
             _sent_this_run += 1
         except Exception as exc:
+            campaign_service.sync_draft_state(draft.id, user.id, "FAILED")
             record_failed(draft.id, exc, user.id)
             raise HTTPException(
                 status_code=502,

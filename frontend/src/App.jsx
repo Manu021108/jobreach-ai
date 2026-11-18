@@ -449,7 +449,7 @@ function App() {
           {page === "companies" && <Companies contacts={contacts} settings={settings} busy={busy} run={run} onNavigate={setPage} />}
           {page === "studio" && <Studio contacts={contacts} busy={busy} run={run} />}
           {page === "jobs" && <JobMatch contacts={contacts} busy={busy} run={run} onNavigate={setPage} />}
-          {page === "campaign" && <Campaign drafts={drafts} settings={settings} busy={busy} run={run} />}
+          {page === "campaign" && <Campaign contacts={contacts} drafts={drafts} settings={settings} busy={busy} run={run} />}
           {page === "followups" && <FollowUps items={followups} busy={busy} run={run} />}
           {page === "unlock" && <UnlockPage database={hrDatabase} billing={billing} settings={settings} busy={busy} run={run} />}
           {page === "settings" && <SettingsPage settings={settings} busy={busy} run={run} onUserUpdate={setUser} onNavigate={setPage} />}
@@ -961,7 +961,7 @@ function JobMatch({ contacts, busy, run, onNavigate }) {
   );
 }
 
-function Campaign({ drafts, settings, busy, run }) {
+function Campaign({ contacts = [], drafts, settings, busy, run }) {
   const [draftId, setDraftId] = useState("");
   const draft = drafts.find((d) => String(d.id) === draftId) || drafts[0];
   const [subject, setSubject] = useState("");
@@ -969,6 +969,26 @@ function Campaign({ drafts, settings, busy, run }) {
   const [reviewed, setReviewed] = useState(false);
   const [typed, setTyped] = useState("");
   const [preview, setPreview] = useState(null);
+  const [campaigns, setCampaigns] = useState([]);
+  const [campaignSearch, setCampaignSearch] = useState("");
+  const [selectedContacts, setSelectedContacts] = useState([]);
+  const [selectedDrafts, setSelectedDrafts] = useState([]);
+  const [campaignError, setCampaignError] = useState("");
+  const [loadingCampaigns, setLoadingCampaigns] = useState(true);
+
+  const loadCampaigns = useCallback(async () => {
+    try {
+      const data = await api("/campaigns");
+      setCampaigns(data);
+      setCampaignError("");
+    } catch (e) {
+      setCampaignError(e.message);
+    } finally {
+      setLoadingCampaigns(false);
+    }
+  }, []);
+
+  useEffect(() => { loadCampaigns(); }, [loadCampaigns]);
 
   useEffect(() => {
     if (draft) {
@@ -978,25 +998,163 @@ function Campaign({ drafts, settings, busy, run }) {
     }
   }, [draft?.id]);
 
+  const eligibleContacts = useMemo(() => contacts.filter((contact) => (
+    !contact.opted_out && !["SENT", "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED"].includes(contact.status)
+  )), [contacts]);
+  const visibleContacts = useMemo(() => {
+    const term = campaignSearch.trim().toLowerCase();
+    if (!term) return eligibleContacts;
+    return eligibleContacts.filter((contact) => (
+      [contact.company_name, contact.email, contact.role].some((value) => (value || "").toLowerCase().includes(term))
+    ));
+  }, [eligibleContacts, campaignSearch]);
+  const allVisibleSelected = visibleContacts.length > 0 && visibleContacts.every((contact) => selectedContacts.includes(contact.id));
+
+  const toggleContact = (id, checked) => {
+    if (checked && selectedContacts.length >= 50) {
+      setCampaignError("Select up to 50 contacts per campaign.");
+      return;
+    }
+    setCampaignError("");
+    setSelectedContacts((prev) => checked ? [...prev, id] : prev.filter((value) => value !== id));
+  };
+  const toggleVisibleContacts = () => {
+    if (allVisibleSelected) {
+      setSelectedContacts((prev) => prev.filter((id) => !visibleContacts.some((contact) => contact.id === id)));
+    } else {
+      const merged = Array.from(new Set([...selectedContacts, ...visibleContacts.map((contact) => contact.id)]));
+      setSelectedContacts(merged.slice(0, 50));
+    }
+  };
+  const toggleDraft = (id) => setSelectedDrafts((prev) => (
+    prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]
+  ));
+
   const selectDraft = (value) => {
     const item = drafts.find((d) => String(d.id) === value);
     setDraftId(value);
     setSubject(item?.subject || ""); setBody(item?.body || "");
     setReviewed(false); setTyped(""); setPreview(null);
   };
-  const save = () => run(() => api(`/drafts/${draft.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subject, body }) }), "Draft updated. It must be approved again before sending.");
-  const approve = () => run(() => api(`/drafts/${draft.id}/approve`, { method: "POST" }), "Draft approved. It has not been sent.");
+  const save = async () => {
+    const result = await run(() => api(`/drafts/${draft.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subject, body }) }), "Draft updated. It must be approved again before sending.");
+    if (result) loadCampaigns();
+  };
+  const approve = async () => {
+    const result = await run(() => api(`/drafts/${draft.id}/approve`, { method: "POST" }), "Draft approved. It has not been sent.");
+    if (result) loadCampaigns();
+  };
   const showPreview = async () => { const r = await run(() => api(`/drafts/${draft.id}/preview`), "Preview ready.", false); if (r) setPreview(r); };
-  const send = () => run(() => api(`/drafts/${draft.id}/send`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewed, typed_recipient: typed }) }), "Gmail accepted the message send request.");
+  const send = async () => {
+    const result = await run(() => api(`/drafts/${draft.id}/send`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewed, typed_recipient: typed }) }), "Gmail accepted the message send request.");
+    if (result) loadCampaigns();
+  };
+  const generateCampaign = async () => {
+    setCampaignError("");
+    const result = await run(() => api("/campaigns/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contact_ids: selectedContacts }) }), (data) => `Generated ${data.generated} draft(s).${data.failed ? ` ${data.failed} failed.` : ""}`);
+    if (result) {
+      setSelectedContacts([]);
+      await loadCampaigns();
+    }
+  };
+  const approveCampaign = async (campaignId) => {
+    const campaign = campaigns.find((item) => item.id === campaignId);
+    const ids = selectedDrafts.filter((id) => campaign?.entries.some((entry) => entry.draft_id === id));
+    if (!ids.length) return;
+    const result = await run(() => api(`/campaigns/${campaignId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draft_ids: ids }) }), (data) => `Approved ${data.approved} draft(s).${data.errors?.length ? ` ${data.errors.length} could not be approved.` : ""}`);
+    if (result) {
+      setSelectedDrafts((prev) => prev.filter((id) => !ids.includes(id)));
+      await loadCampaigns();
+    }
+  };
+  const queueCampaign = async (campaignId) => {
+    const result = await run(() => api(`/campaigns/${campaignId}/queue`, { method: "POST" }), (data) => `${data.queued} approved draft(s) queued. Sending still requires individual confirmation.`);
+    if (result) await loadCampaigns();
+  };
   const approvedCount = drafts.filter((d) => d.status === "APPROVED").length;
 
   return (
     <>
-      <PageHeading eyebrow="Review before every send" title="Campaign review" description="One recipient at a time. Nothing is sent without your explicit confirmation." />
+      <PageHeading eyebrow="Campaign builder" title="Campaign builder" description="Select contacts, generate drafts, approve, and queue. Sending stays one recipient at a time." />
+      <section className="panel campaign-builder-panel">
+        <div className="panel-header"><div><h2 className="section-heading">Build a campaign</h2><p className="panel-subtitle">{eligibleContacts.length} eligible contacts · {selectedContacts.length} selected</p></div><span className="panel-number">00</span></div>
+        <div className="campaign-builder-grid">
+          <div>
+            <label className="field-label" htmlFor="campaign-contact-search">Find contacts</label>
+            <input id="campaign-contact-search" value={campaignSearch} onChange={(e) => setCampaignSearch(e.target.value)} placeholder="Search company, email, or role" />
+            <div className="campaign-contact-tools">
+              <button className="text-button" disabled={!visibleContacts.length} onClick={toggleVisibleContacts}>{allVisibleSelected ? "Clear visible" : "Select visible"}</button>
+              <span>{selectedContacts.length}/50 selected</span>
+            </div>
+            {visibleContacts.length ? (
+              <div className="campaign-contact-list">
+                {visibleContacts.map((contact) => (
+                  <label className="campaign-contact-row" key={contact.id}>
+                    <input type="checkbox" checked={selectedContacts.includes(contact.id)} onChange={(e) => toggleContact(contact.id, e.target.checked)} />
+                    <span><strong>{contact.company_name}</strong><small>{contact.email} · {contact.role || "Contact"}</small></span>
+                    <Badge>{contact.status}</Badge>
+                  </label>
+                ))}
+              </div>
+            ) : <EmptyState title="No eligible contacts" detail="Add contacts or adjust your search. Sent, replied, and opted-out contacts are excluded." />}
+          </div>
+          <aside className="campaign-action-card">
+            <span className="send-step">01</span>
+            <h2>Generate AI drafts</h2>
+            <p>Create one personalized draft per selected contact. Nothing sends automatically.</p>
+            <button className="button button-primary full-button" disabled={busy || !selectedContacts.length} onClick={generateCampaign}>Generate {selectedContacts.length || ""} draft{selectedContacts.length === 1 ? "" : "s"}</button>
+            {campaignError && <div className="alert alert-error"><span>!</span><p>{campaignError}</p></div>}
+          </aside>
+        </div>
+      </section>
+      <section className="panel campaign-queue-panel">
+        <div className="panel-header"><div><h2 className="section-heading">Campaign queue</h2><p className="panel-subtitle">Generated drafts must be approved before they can be queued.</p></div><Badge>{campaigns.length} campaigns</Badge></div>
+        {loadingCampaigns ? <div className="empty-state"><p>Loading campaigns...</p></div> : campaigns.length ? (
+          <div className="campaign-list">
+            {campaigns.map((campaign) => {
+              const generatedDrafts = campaign.entries.filter((entry) => entry.state === "GENERATED" && entry.draft_id);
+              const selectedForCampaign = generatedDrafts.filter((entry) => selectedDrafts.includes(entry.draft_id)).length;
+              return (
+                <article className="campaign-card" key={campaign.id}>
+                  <div className="campaign-card-header">
+                    <div><strong>{campaign.name}</strong><span>{formatDate(campaign.created_at)} · {campaign.counts.total} contacts</span></div>
+                    <Badge>{campaign.status}</Badge>
+                  </div>
+                  <div className="campaign-counts">
+                    <span>{campaign.counts.generated} generated</span>
+                    <span>{campaign.counts.approved} approved</span>
+                    <span>{campaign.counts.queued} queued</span>
+                    <span>{campaign.counts.sent} sent</span>
+                    {campaign.counts.failed > 0 && <span className="status-warn">{campaign.counts.failed} failed</span>}
+                  </div>
+                  <div className="campaign-entry-list">
+                    {campaign.entries.map((entry) => (
+                      <div className="campaign-entry" key={entry.id}>
+                        {entry.state === "GENERATED" && entry.draft_id ? <input type="checkbox" checked={selectedDrafts.includes(entry.draft_id)} onChange={() => toggleDraft(entry.draft_id)} aria-label={`Select draft for ${entry.company_name}`} /> : <span className="campaign-entry-spacer" />}
+                        <div className="campaign-entry-main">
+                          <strong>{entry.company_name}</strong>
+                          <span>{entry.email}</span>
+                          {entry.subject && <small>{entry.subject}</small>}
+                          {entry.error && <small className="status-warn">{entry.error}</small>}
+                        </div>
+                        <Badge>{entry.state}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="button-row">
+                    <button className="button button-secondary" disabled={busy || !selectedForCampaign} onClick={() => approveCampaign(campaign.id)}>Approve selected ({selectedForCampaign})</button>
+                    <button className="button button-primary" disabled={busy || !campaign.counts.approved} onClick={() => queueCampaign(campaign.id)}>Queue {campaign.counts.approved} approved</button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : <EmptyState title="No campaigns yet" detail="Select contacts above to generate your first set of drafts." />}
+      </section>
       {!drafts.length ? <div className="panel"><EmptyState title="No drafts to review" detail="Create an email draft in AI Email Studio to begin." /></div> : (
         <div className="campaign-layout">
           <section className="panel">
-            <div className="panel-header"><div><h2 className="section-heading">Draft review</h2><p className="panel-subtitle">{drafts.length} saved drafts · {approvedCount} approved</p></div><span className="panel-number">01</span></div>
+            <div className="panel-header"><div><h2 className="section-heading">Draft review</h2><p className="panel-subtitle">{drafts.length} saved drafts · {approvedCount} approved</p></div><span className="panel-number">02</span></div>
             <label className="field-label">Select draft</label>
             <select value={draft?.id || ""} onChange={(e) => selectDraft(e.target.value)}>
               {drafts.map((d) => <option key={d.id} value={d.id}>#{d.id} — {d.contact.company_name} — {d.status}</option>)}
@@ -1019,7 +1177,7 @@ function Campaign({ drafts, settings, busy, run }) {
           </section>
           <aside className="send-aside">
             <section className={`panel send-card ${draft?.status === "APPROVED" ? "send-card-ready" : ""}`}>
-              <div className="send-card-top"><span className="send-step">02</span><span className={draft?.status === "APPROVED" ? "ready-label" : "waiting-label"}>{draft?.status === "APPROVED" ? "Ready for review" : "Awaiting approval"}</span></div>
+              <div className="send-card-top"><span className="send-step">03</span><span className={draft?.status === "APPROVED" ? "ready-label" : "waiting-label"}>{draft?.status === "APPROVED" ? "Ready for review" : "Awaiting approval"}</span></div>
               <h2>Send email</h2>
               <p>A second confirmation protects against accidental sends.</p>
               {settings?.dry_run ? <div className="dry-run-notice"><strong>Preview only</strong><span>DRY_RUN is on. No email will be sent.</span></div> : <div className="live-notice"><strong>Live sending enabled</strong><span>Daily limit: {settings?.max_emails_per_day}. Per-run limit: {settings?.max_emails_per_run}.</span></div>}
