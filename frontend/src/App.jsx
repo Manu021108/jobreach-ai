@@ -4,6 +4,7 @@ const navigation = [
   { id: "overview", label: "Overview", icon: "overview" },
   { id: "companies", label: "Companies", icon: "companies" },
   { id: "studio", label: "AI Email Studio", icon: "studio" },
+  { id: "jobs", label: "Job Match", icon: "jobs" },
   { id: "campaign", label: "Campaign & Send", icon: "campaign" },
   { id: "followups", label: "Follow-ups", icon: "followups" },
   { id: "settings", label: "Settings", icon: "settings" },
@@ -19,6 +20,7 @@ const icons = {
   companies: <svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V7a2 2 0 0 1 2-2h4v16M13 21V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v17"/><path d="M8 9h.01M8 13h.01M16 8h.01M16 12h.01M16 16h.01"/></svg>,
   studio: <svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.8L18.6 9l-4.2 2.5L13 16l-1-4.5L7.8 9l4.4-1.2L12 3z"/><path d="M5 18l.8 2.2L8 21l-2.2.8L5 24l-.8-2.2L2 21l2.2-.8L5 18z"/></svg>,
   campaign: <svg viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>,
+  jobs: <svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18"/></svg>,
   followups: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
   settings: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a2 2 0 0 1-4 0v-.1a1 1 0 0 0-.7-.9 1 1 0 0 0-1.1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a2 2 0 0 1 0-4h.1a1 1 0 0 0 .9-.7 1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2h.1a1 1 0 0 0 .6-.9V4a2 2 0 0 1 4 0v.1a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1v.1a1 1 0 0 0 .9.6H20a2 2 0 0 1 0 4h-.1a1 1 0 0 0-.9.6z"/></svg>,
   refresh: <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>,
@@ -148,6 +150,7 @@ function App() {
           {page === "overview" && <Overview dashboard={dashboard} onNavigate={setPage} />}
           {page === "companies" && <Companies contacts={contacts} busy={busy} run={run} />}
           {page === "studio" && <Studio contacts={contacts} busy={busy} run={run} />}
+          {page === "jobs" && <JobMatch contacts={contacts} busy={busy} run={run} onNavigate={setPage} />}
           {page === "campaign" && <Campaign drafts={drafts} settings={settings} busy={busy} run={run} />}
           {page === "followups" && <FollowUps items={followups} busy={busy} run={run} />}
           {page === "settings" && <SettingsPage settings={settings} busy={busy} run={run} />}
@@ -372,6 +375,136 @@ function Studio({ contacts, busy, run }) {
   );
 }
 
+function JobMatch({ contacts, busy, run, onNavigate }) {
+  const eligible = useMemo(
+    () => contacts.filter((c) => !c.opted_out && !["SENT", "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED"].includes(c.status)),
+    [contacts],
+  );
+  const [contactId, setContactId] = useState("");
+  const [website, setWebsite] = useState("");
+  const [jobs, setJobs] = useState([]);
+  const [warnings, setWarnings] = useState([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [match, setMatch] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [savedId, setSavedId] = useState(null);
+  const activeContact = eligible.find((c) => String(c.id) === String(contactId)) || eligible[0];
+
+  useEffect(() => {
+    if (!contactId && eligible.length) setContactId(String(eligible[0].id));
+  }, [eligible, contactId]);
+
+  useEffect(() => {
+    if (!activeContact) return;
+    setWebsite(activeContact.website || "");
+    setSelectedId(""); setMatch(null); setDraft(null); setSavedId(null); setWarnings([]);
+    api(`/contacts/${activeContact.id}/jobs`).then(setJobs).catch(() => setJobs([]));
+  }, [activeContact?.id]);
+
+  const selected = jobs.find((job) => String(job.id) === String(selectedId));
+  let evidence = null;
+  if (selected?.evidence) {
+    try { evidence = JSON.parse(selected.evidence); } catch { evidence = null; }
+  }
+
+  const saveWebsite = () => run(
+    () => api(`/contacts/${activeContact.id}/website`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ website }) }),
+    "Official website saved.",
+  );
+  const discover = async () => {
+    const result = await run(() => api(`/contacts/${activeContact.id}/jobs/discover`, { method: "POST" }), (r) => `${r.added} verified opening(s) found.`);
+    if (result) { setJobs(result.jobs); setWarnings(result.warnings || []); }
+  };
+  const score = async () => {
+    const result = await run(() => api(`/jobs/${selected.id}/match`, { method: "POST" }), "Skill match calculated.");
+    if (result) { setMatch(result); setJobs((items) => items.map((item) => (item.id === result.job.id ? result.job : item))); }
+  };
+  const generate = async () => {
+    const result = await run(() => api(`/jobs/${selected.id}/generate`, { method: "POST" }), "Tailored draft generated from the verified listing.");
+    if (result) { setDraft({ subject: result.subject, body: result.body }); setSavedId(null); }
+  };
+  const saveDraft = async () => {
+    const result = await run(() => api(`/jobs/${selected.id}/drafts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft) }), "Saved. Approve it in Campaign & Send.");
+    if (result) setSavedId(result.id);
+  };
+
+  return (
+    <>
+      <PageHeading eyebrow="Verified jobs, tailored outreach" title="Job Match" description="Find current openings on official career sites, check the fit, and write an email grounded in real evidence." />
+      {!eligible.length ? <div className="panel"><EmptyState title="No eligible contacts" detail="Import contacts first, then pick a company to research." /></div> : (
+        <div className="job-layout">
+          <div className="job-left">
+            <section className="panel">
+              <div className="panel-header"><div><h2 className="section-heading">01 · Identify the company</h2><p className="panel-subtitle">Company and website from your contact list</p></div><span className="panel-number">01</span></div>
+              <label className="field-label">Company contact</label>
+              <select value={activeContact?.id || ""} onChange={(e) => setContactId(e.target.value)}>
+                {eligible.map((c) => <option key={c.id} value={c.id}>{c.company_name} — {c.email}</option>)}
+              </select>
+              <label className="field-label">Official website</label>
+              <div className="website-row">
+                <input value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://company.com" />
+                <button className="button button-secondary" disabled={busy} onClick={saveWebsite}>Save</button>
+              </div>
+              <p className="field-note">Derived from the contact email when the sheet has no website. Correct it before searching.</p>
+              <button className="button button-primary full-button" style={{ marginTop: 8 }} disabled={busy} onClick={discover}>
+                {busy ? <><span className="spinner" /> Searching official sources…</> : <>Discover official openings</>}
+              </button>
+              {warnings.length > 0 && <div className="job-warnings">{warnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
+            </section>
+            <section className="panel">
+              <div className="panel-header"><div><h2 className="section-heading">02 · Verified openings <span className="inline-count">{jobs.length}</span></h2><p className="panel-subtitle">Official careers pages and linked ATS boards</p></div></div>
+              {!jobs.length ? <EmptyState title="No verified openings yet" detail="Run discovery above. Each result keeps its official source and check time." /> : (
+                <div className="job-list">
+                  {jobs.map((job) => (
+                    <article key={job.id} className={`job-card ${String(job.id) === selectedId ? "job-card-active" : ""} ${job.active ? "" : "job-card-inactive"}`} onClick={() => { setSelectedId(String(job.id)); setMatch(null); setDraft(null); setSavedId(null); }}>
+                      <div className="job-card-top"><strong>{job.title}</strong><span className={job.active ? "job-status-active" : "job-status-inactive"}>{job.active ? "Active" : "Inactive"}</span></div>
+                      <div className="job-meta">{job.company_name}{job.location ? ` · ${job.location}` : ""} · {job.source}</div>
+                      <a className="job-link" href={job.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>{job.url}</a>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+          <section className="panel job-detail">
+            <div className="panel-header"><div><h2 className="section-heading">03 · Evidence, match & email</h2><p className="panel-subtitle">Nothing is sent without your approval</p></div><span className="panel-number">03</span></div>
+            {!selected ? <EmptyState title="Select a verified opening" detail="Choose an opening to see its evidence, compare your skills, and draft an email." /> : (
+              <>
+                <div className="job-evidence">
+                  <div><span>Official source</span><a href={selected.source_url} target="_blank" rel="noreferrer">{selected.source_url}</a></div>
+                  <div><span>Verified</span><strong>{formatDate(selected.verified_at)}</strong></div>
+                  <div><span>Evidence</span><strong>{evidence?.signal || selected.source}{evidence?.status_code ? ` · HTTP ${evidence.status_code}` : ""}</strong></div>
+                  <details><summary>Listing description</summary><p>{selected.description || "No description was published on this page."}</p></details>
+                </div>
+                <button className="button button-secondary full-button" disabled={busy} onClick={score}>Match my skills</button>
+                {match && (
+                  <div className="match-block">
+                    <div className="match-top"><strong>{match.score}% match</strong><span>based on your Python, AI/ML and data engineering profile</span></div>
+                    <div className="progress-track"><div style={{ width: `${match.score}%` }} /></div>
+                    <div className="skill-tags">{match.matched.map((skill) => <span className="skill-tag" key={skill}>{skill}</span>)}{match.missing.map((skill) => <span className="skill-tag skill-tag-miss" key={skill}>{skill}</span>)}</div>
+                    <p className="fine-print">{match.reasons.join(" · ")}</p>
+                  </div>
+                )}
+                <button className="button button-primary full-button" disabled={busy} onClick={generate}>Generate tailored email</button>
+                {draft && (
+                  <div className="job-draft">
+                    <label className="field-label">Subject</label>
+                    <input value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} />
+                    <label className="field-label">Email body</label>
+                    <textarea className="job-body" value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
+                    <button className="button button-secondary full-button" disabled={busy} onClick={saveDraft}>Save for review</button>
+                    {savedId && <div className="test-result">Saved draft #{savedId}. <button className="button button-ghost" onClick={() => onNavigate("campaign")}>Open Campaign &amp; Send</button></div>}
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+      )}
+    </>
+  );
+}
+
 function Campaign({ drafts, settings, busy, run }) {
   const [draftId, setDraftId] = useState("");
   const draft = drafts.find((d) => String(d.id) === draftId) || drafts[0];
@@ -449,6 +582,13 @@ function Campaign({ drafts, settings, busy, run }) {
               <section className="panel preview-card">
                 <div className="panel-header"><div><h2 className="section-heading">Send preview</h2><p className="panel-subtitle">Review these details before proceeding</p></div><button className="icon-button" onClick={() => setPreview(null)} aria-label="Close preview"><Icon name="x" /></button></div>
                 <div className="preview-meta"><span>To</span><strong>{preview.to}</strong><span>Subject</span><strong>{preview.subject}</strong><span>Attachment</span><strong>{preview.resume || "No resume uploaded"}</strong></div>
+                {preview.job && (
+                  <div className="preview-job">
+                    <span>Verified opening: <strong>{preview.job.title}</strong></span>
+                    <a href={preview.job.url} target="_blank" rel="noreferrer">{preview.job.url}</a>
+                    <span>Checked {formatDate(preview.job.verified_at)} · {preview.job.source}</span>
+                  </div>
+                )}
                 <pre>{preview.body}</pre>
               </section>
             )}

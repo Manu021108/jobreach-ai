@@ -19,6 +19,8 @@ from app.db.models import Contact, OutreachEvent
 from app.db.session import SessionLocal, init_db
 from app.services.ai_writer import AIWriter
 from app.services.gmail_service import GmailService
+from app.services.job_discovery import discover_jobs
+from app.services.job_matcher import match_job
 from app.services.outreach import (
     add_contacts,
     approve_draft,
@@ -27,13 +29,18 @@ from app.services.outreach import (
     get_contacts,
     get_drafts,
     get_followups,
+    get_job,
+    get_jobs,
     mark_sent,
     record_failed,
     save_draft,
+    save_jobs,
     sent_today_count,
     set_contact_status,
     sync_replies_best_effort,
+    update_contact_website,
     update_draft,
+    update_job_match,
 )
 
 @asynccontextmanager
@@ -63,6 +70,10 @@ class CompanyContextUpdate(BaseModel):
     company_context: str = Field(max_length=20_000)
 
 
+class WebsiteUpdate(BaseModel):
+    website: str = Field(max_length=500)
+
+
 class DraftInput(BaseModel):
     subject: str = Field(min_length=1, max_length=500)
     body: str = Field(min_length=1, max_length=50_000)
@@ -89,6 +100,7 @@ def _contact_dict(contact):
         "source_url": contact.source_url,
         "location": contact.location,
         "notes": contact.notes,
+        "website": getattr(contact, "website", ""),
         "status": contact.status,
         "opted_out": contact.opted_out,
         "created_at": _iso(contact.created_at),
@@ -96,7 +108,31 @@ def _contact_dict(contact):
     }
 
 
+def _job_dict(job):
+    if not job:
+        return None
+    return {
+        "id": job.id,
+        "contact_id": job.contact_id,
+        "company_name": job.company_name,
+        "title": job.title,
+        "location": job.location,
+        "description": job.description,
+        "url": job.url,
+        "apply_url": job.apply_url,
+        "source": job.source,
+        "source_url": job.source_url,
+        "active": job.active,
+        "evidence": job.evidence,
+        "match_score": job.match_score,
+        "match_reasons": job.match_reasons,
+        "verified_at": _iso(job.verified_at),
+        "created_at": _iso(job.created_at),
+    }
+
+
 def _draft_dict(draft):
+    job_id = getattr(draft, "job_id", None)
     return {
         "id": draft.id,
         "contact_id": draft.contact_id,
@@ -105,6 +141,8 @@ def _draft_dict(draft):
         "status": draft.status,
         "approved_at": _iso(draft.approved_at),
         "created_at": _iso(draft.created_at),
+        "job_id": job_id,
+        "job": _job_dict(get_job(job_id)) if job_id else None,
         "contact": _contact_dict(draft.contact),
     }
 
@@ -233,6 +271,77 @@ def update_contact_context(contact_id: int, payload: CompanyContextUpdate):
         return _contact_dict(contact)
 
 
+@app.put("/api/contacts/{contact_id}/website")
+def update_website(contact_id: int, payload: WebsiteUpdate):
+    try:
+        contact = update_contact_website(contact_id, payload.website)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _contact_dict(contact)
+
+
+@app.post("/api/contacts/{contact_id}/jobs/discover")
+def discover_contact_jobs(contact_id: int):
+    with SessionLocal() as db:
+        contact = db.get(Contact, contact_id)
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found.")
+    jobs, warnings = discover_jobs(contact)
+    added, _skipped = save_jobs(contact.id, jobs)
+    return {
+        "added": added,
+        "warnings": warnings[:8],
+        "jobs": [_job_dict(item) for item in get_jobs(contact.id)],
+    }
+
+
+@app.get("/api/contacts/{contact_id}/jobs")
+def list_contact_jobs(contact_id: int):
+    return [_job_dict(item) for item in get_jobs(contact_id)]
+
+
+@app.post("/api/jobs/{job_id}/match")
+def score_job(job_id: int):
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    result = match_job(job)
+    update_job_match(job_id, result["score"], "; ".join(result["reasons"]))
+    return {"job": _job_dict(get_job(job_id)), **result}
+
+
+@app.post("/api/jobs/{job_id}/generate")
+def generate_job_draft(job_id: int):
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    with SessionLocal() as db:
+        contact = db.get(Contact, job.contact_id)
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found.")
+    if contact.opted_out or contact.status in {"SENT", "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED"}:
+        raise HTTPException(status_code=409, detail="This contact is not eligible for a new draft.")
+    match = match_job(job)
+    if job.match_score is not None:
+        match["score"] = job.match_score
+    resume = _resume_path()
+    try:
+        generated = AIWriter().generate_for_job(contact, job, match, resume.name if resume else "resume.pdf")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI generation failed: {exc}") from exc
+    draft_id = save_draft(contact.id, generated["subject"], generated["body"], job.id)
+    return {"id": draft_id, **generated, "job": _job_dict(job)}
+
+
+@app.post("/api/jobs/{job_id}/drafts")
+def create_job_draft(job_id: int, payload: DraftInput):
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    draft_id = save_draft(job.contact_id, payload.subject, payload.body, job.id)
+    return {"id": draft_id}
+
+
 @app.post("/api/contacts/{contact_id}/generate")
 def generate_draft(contact_id: int, payload: CompanyContextUpdate):
     with SessionLocal() as db:
@@ -290,12 +399,14 @@ def preview_draft(draft_id: int):
         raise HTTPException(status_code=404, detail="Draft not found.")
     if draft.status != "APPROVED":
         raise HTTPException(status_code=409, detail="Approve this draft before previewing a send.")
+    job = _job_dict(get_job(draft.job_id)) if getattr(draft, "job_id", None) else None
     return {
         "to": draft.contact.email,
         "company": draft.contact.company_name,
         "subject": draft.subject,
         "body": draft.body,
         "resume": _resume_path().name if _resume_path() else None,
+        "job": job,
     }
 
 

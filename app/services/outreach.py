@@ -5,8 +5,9 @@ from sqlalchemy.orm import joinedload
 from email_validator import validate_email, EmailNotValidError
 from sqlalchemy.exc import IntegrityError
 from app.config import settings
-from app.db.models import Contact, EmailDraft, OutreachEvent
+from app.db.models import Contact, EmailDraft, JobPosting, OutreachEvent
 from app.db.session import SessionLocal
+from app.utils import website_from_email
 
 
 def add_contacts(records):
@@ -37,6 +38,7 @@ def add_contacts(records):
                 company_context=str(item.get("company_context") or ""),
                 job_url=str(item.get("job_url") or ""), source_url=str(item.get("source_url") or ""),
                 location=str(item.get("location") or ""), notes=str(item.get("notes") or ""),
+                website=website_from_email(email, item.get("website")),
             )
             db.add(contact)
             existing_pairs.add(pair)
@@ -58,12 +60,12 @@ def get_contact(contact_id):
         return db.get(Contact, int(contact_id))
 
 
-def save_draft(contact_id, subject, body):
+def save_draft(contact_id, subject, body, job_id=None):
     with SessionLocal() as db:
         contact = db.get(Contact, int(contact_id))
         if not contact:
             raise ValueError("Contact not found")
-        draft = EmailDraft(contact_id=contact.id, subject=subject.strip(), body=body.strip(), status="DRAFT")
+        draft = EmailDraft(contact_id=contact.id, subject=subject.strip(), body=body.strip(), status="DRAFT", job_id=job_id)
         db.add(draft)
         db.flush()
         contact.status = "DRAFTED"
@@ -213,3 +215,66 @@ def sync_replies_best_effort(gmail):
                 continue
         db.commit()
     return updated
+
+
+def get_jobs(contact_id):
+    with SessionLocal() as db:
+        stmt = select(JobPosting).where(JobPosting.contact_id == int(contact_id)).order_by(JobPosting.created_at.desc())
+        return list(db.scalars(stmt).all())
+
+
+def get_job(job_id):
+    with SessionLocal() as db:
+        return db.get(JobPosting, int(job_id))
+
+
+def save_jobs(contact_id, jobs):
+    added, skipped = 0, 0
+    with SessionLocal() as db:
+        existing = set(db.scalars(select(JobPosting.url).where(JobPosting.contact_id == int(contact_id))).all())
+        for item in jobs:
+            url = str(item.get("url") or "").strip()
+            if not url or url in existing:
+                skipped += 1
+                continue
+            db.add(JobPosting(
+                contact_id=int(contact_id),
+                company_name=str(item.get("company_name") or "")[:200],
+                title=str(item.get("title") or "Open Role")[:300],
+                location=str(item.get("location") or "")[:200],
+                description=str(item.get("description") or "")[:20000],
+                url=url[:1000],
+                apply_url=str(item.get("apply_url") or url)[:1000],
+                source=str(item.get("source") or "careers_page")[:50],
+                source_url=str(item.get("source_url") or url)[:1000],
+                active=bool(item.get("active", True)),
+                evidence=str(item.get("evidence") or ""),
+                verified_at=datetime.now(timezone.utc),
+            ))
+            existing.add(url)
+            added += 1
+        db.commit()
+    return added, skipped
+
+
+def update_job_match(job_id, score, reasons):
+    with SessionLocal() as db:
+        job = db.get(JobPosting, int(job_id))
+        if not job:
+            raise ValueError("Job not found")
+        job.match_score = int(score)
+        job.match_reasons = str(reasons)
+        db.commit()
+        db.refresh(job)
+        return job
+
+
+def update_contact_website(contact_id, website):
+    with SessionLocal() as db:
+        contact = db.get(Contact, int(contact_id))
+        if not contact:
+            raise ValueError("Contact not found")
+        contact.website = website_from_email(contact.email, website)
+        db.commit()
+        db.refresh(contact)
+        return contact
