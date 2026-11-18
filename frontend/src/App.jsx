@@ -7,7 +7,7 @@ const navigation = [
   { id: "jobs", label: "Job Match", icon: "jobs" },
   { id: "campaign", label: "Campaign & Send", icon: "campaign" },
   { id: "followups", label: "Follow-ups", icon: "followups" },
-  { id: "settings", label: "Settings", icon: "settings" },
+  { id: "settings", label: "Profile & Settings", icon: "settings" },
 ];
 
 const statuses = [
@@ -234,8 +234,10 @@ function Onboarding({ onCompleted }) {
 
   const saveProfile = async () => {
     setBusy(true); setError("");
-    try { await api("/profile", jsonBody()); }
-    catch (e) { setError(e.message); }
+    try {
+      const result = await api("/profile", jsonBody());
+      if (result.onboarding?.completed) onCompleted(await api("/auth/me"));
+    } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
 
@@ -247,6 +249,7 @@ function Onboarding({ onCompleted }) {
       body.append("file", resume);
       const result = await api("/profile/resume", { method: "POST", body });
       setResumeName(result.resume_name);
+      if (result.onboarding?.completed) onCompleted(await api("/auth/me"));
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
@@ -261,11 +264,8 @@ function Onboarding({ onCompleted }) {
   };
 
   return (
-    <div className="auth-shell">
-      <form className="auth-card onboarding-card" onSubmit={(event) => event.preventDefault()}>
-        <div className="brand-mark auth-mark">JR</div>
-        <h1 className="auth-title">Set up your profile</h1>
-        <p className="auth-subtitle">Your profile and resume are saved to your account. You can edit everything later in Settings.</p>
+    <form className="panel onboarding-card" onSubmit={(event) => event.preventDefault()}>
+      <div className="panel-header"><div><h2 className="section-heading">Profile setup</h2><p className="panel-subtitle">Saved privately to your account; editable any time in Settings</p></div></div>
         {error && <div className="alert alert-error" role="alert"><span>!</span><p>{error}</p></div>}
         <div className="onboarding-grid">
           <label className="field-label">Full name<input value={form.full_name} onChange={setField("full_name")} required /></label>
@@ -283,11 +283,10 @@ function Onboarding({ onCompleted }) {
           <button className="button button-secondary" disabled={busy || !profileReady} type="button" onClick={saveProfile}>Save profile</button>
           <button className="button button-secondary" disabled={busy || !resume} type="button" onClick={uploadResume}>Upload resume</button>
         </div>
-        <button className="button button-primary full-button auth-submit" disabled={busy || !profileReady || !resumeName} type="button" onClick={finish}>
-          {busy ? <><span className="spinner" /> Working…</> : "Enter workspace"}
-        </button>
-      </form>
-    </div>
+      <button className="button button-primary full-button auth-submit" disabled={busy || !profileReady || !resumeName} type="button" onClick={finish}>
+        {busy ? <><span className="spinner" /> Working…</> : "Finish setup"}
+      </button>
+    </form>
   );
 }
 
@@ -339,6 +338,10 @@ function App() {
 
   useEffect(() => { if (user) refresh(); }, [user, refresh]);
 
+  useEffect(() => {
+    if (user?.is_verified && !user.onboarding_completed) setPage("settings");
+  }, [user]);
+
   const signOut = async () => {
     try { await api("/auth/logout", { method: "POST" }); } catch { /* ignore */ }
     setUser(null); setDashboard(null); setContacts([]); setDrafts([]); setFollowups([]); setSettings(null);
@@ -369,10 +372,6 @@ function App() {
       />
     );
   }
-  if (!user.onboarding_completed) {
-    return <Onboarding onCompleted={(next) => { setUser(next); setPage("overview"); }} />;
-  }
-
   const run = async (operation, successMessage, thenRefresh = true) => {
     setBusy(true); setError(""); setNotice(null);
     try {
@@ -956,10 +955,18 @@ function SettingsPage({ settings, busy, run, onUserUpdate }) {
   };
   const disconnectGmail = () => run(() => api("/gmail/disconnect", { method: "POST" }), "Gmail disconnected.");
   const gmailConnected = Boolean(settings?.gmail_connected);
+  const needsOnboarding = Boolean(settings?.onboarding && !settings.onboarding.completed);
   return (
     <>
-      <PageHeading eyebrow="Local configuration" title="Settings & integrations" description="Manage your profile, resume, and connected services." />
+      <PageHeading
+        eyebrow={needsOnboarding ? "Getting started" : "Local configuration"}
+        title={needsOnboarding ? "Set up your profile" : "Settings & integrations"}
+        description={needsOnboarding ? "Complete your student profile and resume to personalize drafts and enable sending." : "Manage your profile, resume, and connected services."}
+      />
       <div className="settings-grid">
+        {needsOnboarding ? (
+          <Onboarding onCompleted={(next) => onUserUpdate?.(next)} />
+        ) : (
         <section className="panel">
           <div className="panel-header"><div><h2 className="section-heading">Student profile</h2><p className="panel-subtitle">Editable profile used to personalize AI drafts</p></div><span className="panel-number">01</span></div>
           <div className="settings-profile">
@@ -978,6 +985,7 @@ function SettingsPage({ settings, busy, run, onUserUpdate }) {
           </div>
           <button className="button button-secondary" disabled={busy || !profile} onClick={saveProfile}>Save profile</button>
         </section>
+        )}
 
         <section className="panel">
           <div className="panel-header"><div><h2 className="section-heading">Resume manager</h2><p className="panel-subtitle">PDF resume attached to approved emails</p></div><span className="panel-number">02</span></div>
