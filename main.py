@@ -43,8 +43,10 @@ from app.services.job_discovery import discover_jobs
 from app.services.job_matcher import match_job
 from app.services.outreach import (
     add_contacts,
+    analytics_summary,
     approve_draft,
     complete_followup,
+    create_contact,
     dashboard_stats,
     followup_counts,
     get_contact,
@@ -53,6 +55,8 @@ from app.services.outreach import (
     get_followups,
     get_job,
     get_jobs,
+    inbox_threads,
+    list_all_jobs,
     mark_sent,
     record_failed,
     save_draft,
@@ -99,6 +103,24 @@ class ContactStatusUpdate(BaseModel):
 
 class CompanyContextUpdate(BaseModel):
     company_context: str = Field(max_length=20_000)
+
+
+class ContactCreateInput(BaseModel):
+    company_name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=320)
+    hr_name: str = Field(default="Hiring Team", max_length=200)
+    role: str = Field(default="Relevant Opportunities", max_length=200)
+    company_context: str = Field(default="", max_length=20_000)
+    job_url: str = Field(default="", max_length=1000)
+    source_url: str = Field(default="", max_length=1000)
+    location: str = Field(default="", max_length=200)
+    notes: str = Field(default="", max_length=20_000)
+    website: str = Field(default="", max_length=500)
+
+
+class GenerateInput(BaseModel):
+    company_context: str = Field(default="", max_length=20_000)
+    mode: Literal["application", "general", "recruiter", "hr", "followup", "referral"] = "general"
 
 
 class WebsiteUpdate(BaseModel):
@@ -501,11 +523,43 @@ def dashboard(user: User = Depends(get_current_user)):
     }
 
 
+@app.get("/api/analytics")
+def analytics(days: int = 30, user: User = Depends(get_current_user)):
+    return analytics_summary(user.id, days)
+
+
+@app.get("/api/inbox")
+def inbox(limit: int = 50, user: User = Depends(get_current_user)):
+    return inbox_threads(user.id, limit)
+
+
 @app.get("/api/contacts")
 def contacts(status: str = "All", user: User = Depends(get_current_user)):
     if status != "All" and status not in _all_statuses:
         raise HTTPException(status_code=400, detail="Invalid contact status filter.")
     return [_contact_dict(contact) for contact in get_contacts(status, user.id)]
+
+
+@app.post("/api/contacts")
+def add_single_contact(payload: ContactCreateInput, user: User = Depends(get_current_user)):
+    try:
+        contact = create_contact(payload.model_dump(), user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _contact_dict(contact)
+
+
+@app.get("/api/jobs")
+def all_jobs(
+    query: str = "",
+    company: str = "",
+    location: str = "",
+    active: bool | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    user: User = Depends(get_current_user),
+):
+    return list_all_jobs(user.id, query, company, location, active, page, page_size)
 
 
 @app.get("/api/companies/template")
@@ -688,7 +742,7 @@ def pause_campaign(campaign_id: int, user: User = Depends(get_current_user)):
 
 
 @app.post("/api/contacts/{contact_id}/generate")
-def generate_draft(contact_id: int, payload: CompanyContextUpdate, user: User = Depends(get_current_user)):
+def generate_draft(contact_id: int, payload: GenerateInput, user: User = Depends(get_current_user)):
     with SessionLocal() as db:
         contact = db.get(Contact, contact_id)
         if not contact or contact.owner_id != user.id:
@@ -699,7 +753,7 @@ def generate_draft(contact_id: int, payload: CompanyContextUpdate, user: User = 
         db.commit()
         try:
             generated = AIWriter(profile_service.ai_profile(user.id)).generate(
-                contact, _resume_filename(user)
+                contact, _resume_filename(user), mode=payload.mode
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"AI generation failed: {exc}") from exc

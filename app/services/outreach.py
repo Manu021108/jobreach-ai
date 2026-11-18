@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from email_validator import validate_email, EmailNotValidError
@@ -80,6 +80,48 @@ def add_contacts(records, owner_id=None):
         f"Imported {added} contact(s); skipped {skipped}.",
     )
     return added, skipped, errors
+
+
+def create_contact(data, owner_id=None):
+    email = str(data.get("email", "")).strip().lower()
+    company = str(data.get("company_name", "")).strip()
+    if not company:
+        raise ValueError("Company name is required")
+    try:
+        email = validate_email(email, check_deliverability=False).normalized
+    except EmailNotValidError as exc:
+        raise ValueError("Enter a valid email address") from exc
+    with SessionLocal() as db:
+        existing = db.scalar(select(Contact).where(
+            Contact.owner_id == int(owner_id) if owner_id is not None else Contact.owner_id.is_(None),
+            Contact.email == email,
+            Contact.company_name == company,
+        ))
+        if existing:
+            raise ValueError("This company contact already exists")
+        contact = Contact(
+            company_name=company[:200],
+            email=email[:320],
+            hr_name=str(data.get("hr_name") or "Hiring Team")[:200],
+            role=str(data.get("role") or "Relevant Opportunities")[:200],
+            company_context=str(data.get("company_context") or ""),
+            job_url=str(data.get("job_url") or "")[:1000],
+            source_url=str(data.get("source_url") or "")[:1000],
+            location=str(data.get("location") or "")[:200],
+            notes=str(data.get("notes") or ""),
+            website=website_from_email(email, data.get("website")),
+            owner_id=int(owner_id) if owner_id is not None else None,
+        )
+        db.add(contact)
+        db.commit()
+        db.refresh(contact)
+    audit.log(
+        owner_id,
+        "CONTACT_CREATED",
+        f"Added {company} ({email}) manually.",
+        contact_id=contact.id,
+    )
+    return contact
 
 
 def get_contacts(status=None, owner_id=None):
@@ -575,3 +617,245 @@ def update_contact_website(contact_id, website, owner_id=None):
         db.commit()
         db.refresh(contact)
         return contact
+
+def _job_payload(job):
+    contact = job.contact
+    return {
+        "id": job.id,
+        "contact_id": job.contact_id,
+        "company_name": job.company_name,
+        "title": job.title,
+        "location": job.location,
+        "description": job.description,
+        "url": job.url,
+        "apply_url": job.apply_url,
+        "source": job.source,
+        "source_url": job.source_url,
+        "active": job.active,
+        "evidence": job.evidence,
+        "match_score": job.match_score,
+        "match_reasons": job.match_reasons,
+        "verified_at": _as_utc(job.verified_at).isoformat() if job.verified_at else None,
+        "created_at": _as_utc(job.created_at).isoformat() if job.created_at else None,
+        "contact_email": contact.email if contact else "",
+        "contact_role": contact.role if contact else "",
+    }
+
+
+def list_all_jobs(owner_id, query="", company="", location="", active=None, page=1, page_size=50):
+    page = max(1, int(page))
+    page_size = min(max(1, int(page_size)), 100)
+    with SessionLocal() as db:
+        conditions = [_owned(JobPosting, owner_id), _owned_contact(JobPosting, owner_id)]
+        if query:
+            term = f"%{query.strip()}%"
+            conditions.append(or_(
+                JobPosting.title.ilike(term),
+                JobPosting.company_name.ilike(term),
+                JobPosting.description.ilike(term),
+            ))
+        if company:
+            conditions.append(JobPosting.company_name.ilike(f"%{company.strip()}%"))
+        if location:
+            conditions.append(JobPosting.location.ilike(f"%{location.strip()}%"))
+        if active is not None:
+            conditions.append(JobPosting.active.is_(bool(active)))
+        total = db.scalar(select(func.count(JobPosting.id)).where(*conditions)) or 0
+        rows = list(db.scalars(
+            select(JobPosting)
+            .options(joinedload(JobPosting.contact))
+            .where(*conditions)
+            .order_by(JobPosting.active.desc(), JobPosting.created_at.desc(), JobPosting.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all())
+        companies = [
+            value for value in db.scalars(
+                select(JobPosting.company_name)
+                .where(_owned(JobPosting, owner_id), _owned_contact(JobPosting, owner_id))
+                .distinct()
+                .order_by(JobPosting.company_name)
+            ).all()
+            if value
+        ]
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "page_count": (total + page_size - 1) // page_size,
+            "companies": companies,
+            "jobs": [_job_payload(job) for job in rows],
+        }
+
+
+def analytics_summary(owner_id, days=30):
+    days = min(max(int(days), 7), 90)
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days - 1)
+    with SessionLocal() as db:
+        contacts = list(db.scalars(select(Contact).where(_owned(Contact, owner_id))).all())
+        drafts = list(db.scalars(
+            select(EmailDraft)
+            .options(joinedload(EmailDraft.contact))
+            .where(_owned(EmailDraft, owner_id), _owned_contact(EmailDraft, owner_id))
+        ).all())
+        jobs = list(db.scalars(
+            select(JobPosting)
+            .options(joinedload(JobPosting.contact))
+            .where(_owned(JobPosting, owner_id), _owned_contact(JobPosting, owner_id))
+            .order_by(JobPosting.created_at.desc())
+        ).all())
+        events = list(db.scalars(
+            select(OutreachEvent)
+            .options(joinedload(OutreachEvent.contact))
+            .where(
+                _owned(OutreachEvent, owner_id),
+                _owned_contact(OutreachEvent, owner_id),
+                OutreachEvent.occurred_at >= start,
+            )
+        ).all())
+        open_followups = list(db.scalars(
+            select(OutreachEvent).where(
+                OutreachEvent.event_type == "SENT",
+                OutreachEvent.completed.is_(False),
+                OutreachEvent.followup_due_at.is_not(None),
+                _owned(OutreachEvent, owner_id),
+                _owned_contact(OutreachEvent, owner_id),
+            )
+        ).all())
+
+    buckets = {}
+    for offset in range(days):
+        key = (start + timedelta(days=offset)).date().isoformat()
+        buckets[key] = {"date": key, "sent": 0, "replies": 0, "opt_outs": 0, "failed": 0, "prepared": 0}
+
+    for draft in drafts:
+        created = _as_utc(draft.created_at)
+        if created and created >= start:
+            key = created.date().isoformat()
+            if key in buckets:
+                buckets[key]["prepared"] += 1
+
+    company_stats = {}
+    for event in events:
+        occurred = _as_utc(event.occurred_at)
+        if not occurred:
+            continue
+        key = occurred.date().isoformat()
+        bucket = buckets.get(key)
+        if bucket is not None:
+            if event.event_type == "SENT":
+                bucket["sent"] += 1
+            elif event.event_type == "REPLIED":
+                bucket["replies"] += 1
+            elif event.event_type == "OPTED_OUT":
+                bucket["opt_outs"] += 1
+            elif event.event_type == "FAILED":
+                bucket["failed"] += 1
+        contact = event.contact
+        if contact:
+            row = company_stats.setdefault(contact.company_name, {"company": contact.company_name, "sent": 0, "replies": 0})
+            if event.event_type == "SENT":
+                row["sent"] += 1
+            elif event.event_type == "REPLIED":
+                row["replies"] += 1
+
+    due = sum(1 for item in open_followups if _as_utc(item.followup_due_at) and _as_utc(item.followup_due_at) <= now)
+    status_counts = {}
+    for contact in contacts:
+        status_counts[contact.status] = status_counts.get(contact.status, 0) + 1
+    draft_counts = {}
+    for draft in drafts:
+        draft_counts[draft.status] = draft_counts.get(draft.status, 0) + 1
+
+    return {
+        "days": days,
+        "series": list(buckets.values()),
+        "totals": {
+            "contacts": len(contacts),
+            "jobs": len(jobs),
+            "active_jobs": sum(1 for job in jobs if job.active),
+            "verified_jobs": sum(1 for job in jobs if job.verified_at),
+            "drafts": len(drafts),
+            "approved": draft_counts.get("APPROVED", 0),
+            "sent": sum(1 for event in events if event.event_type == "SENT"),
+            "replies": sum(1 for contact in contacts if contact.status == "REPLIED"),
+            "opted_out": sum(1 for contact in contacts if contact.opted_out),
+            "followups_due": due,
+            "followups_upcoming": len(open_followups) - due,
+        },
+        "pipeline": status_counts,
+        "draft_pipeline": draft_counts,
+        "companies": sorted(company_stats.values(), key=lambda item: (item["sent"], item["replies"]), reverse=True)[:8],
+        "recent_jobs": [_job_payload(job) for job in jobs[:8]],
+    }
+
+
+def inbox_threads(owner_id, limit=50):
+    limit = min(max(int(limit), 1), 100)
+    with SessionLocal() as db:
+        contacts = list(db.scalars(
+            select(Contact)
+            .where(_owned(Contact, owner_id))
+            .order_by(Contact.updated_at.desc())
+            .limit(limit)
+        ).all())
+        result = []
+        for contact in contacts:
+            events = list(db.scalars(
+                select(OutreachEvent)
+                .where(OutreachEvent.contact_id == contact.id, _owned(OutreachEvent, owner_id))
+                .order_by(OutreachEvent.occurred_at.desc(), OutreachEvent.id.desc())
+                .limit(20)
+            ).all())
+            drafts = list(db.scalars(
+                select(EmailDraft)
+                .where(EmailDraft.contact_id == contact.id, _owned(EmailDraft, owner_id))
+                .order_by(EmailDraft.created_at.desc())
+                .limit(5)
+            ).all())
+            if not events and contact.status not in {"SENT", "REPLIED", "OPTED_OUT"}:
+                continue
+            last = events[0] if events else None
+            last_sent = next((event for event in events if event.event_type == "SENT"), None)
+            thread_id = next((event.thread_id for event in events if event.thread_id), "")
+            result.append({
+                "contact": {
+                    "id": contact.id,
+                    "company_name": contact.company_name,
+                    "email": contact.email,
+                    "hr_name": contact.hr_name,
+                    "role": contact.role,
+                    "location": contact.location,
+                    "website": getattr(contact, "website", ""),
+                    "status": contact.status,
+                    "opted_out": contact.opted_out,
+                    "updated_at": _as_utc(contact.updated_at).isoformat() if contact.updated_at else None,
+                },
+                "last_event_type": last.event_type if last else None,
+                "last_event_at": _as_utc(last.occurred_at).isoformat() if last and last.occurred_at else None,
+                "last_event_details": last.details if last else "",
+                "last_subject": last_sent.draft.subject if last_sent and last_sent.draft else (drafts[0].subject if drafts else ""),
+                "thread_id": thread_id,
+                "message_id": last.message_id if last else "",
+                "reply_detected": contact.status == "REPLIED",
+                "history": [
+                    {
+                        "id": event.id,
+                        "type": event.event_type,
+                        "details": event.details,
+                        "occurred_at": _as_utc(event.occurred_at).isoformat() if event.occurred_at else None,
+                    }
+                    for event in events
+                ],
+                "drafts": [
+                    {
+                        "id": draft.id,
+                        "subject": draft.subject,
+                        "status": draft.status,
+                        "created_at": _as_utc(draft.created_at).isoformat() if draft.created_at else None,
+                    }
+                    for draft in drafts
+                ],
+            })
+        return result
