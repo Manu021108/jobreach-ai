@@ -1,0 +1,341 @@
+================================================================================
+JOBREACH AI -- FROM LOCAL TOOL TO STUDENT SAAS PRODUCT
+IMPLEMENTATION PLAN (DRAFT FOR REVIEW)
+================================================================================
+Version      : 0.1 (draft)
+Date         : 2026-11-18
+Owner        : Product
+Status       : FOR REVIEW / NOT YET APPROVED
+Audience     : Founder, engineering, design, operations
+Source repo  : jobreach-ai (FastAPI + React)
+
+--------------------------------------------------------------------------------
+1. PRODUCT DEFINITION
+--------------------------------------------------------------------------------
+One-line pitch:
+  "Students sign up, connect their own Gmail, pay once to unlock a verified
+   5,000+ HR/recruiter contact database, and run safe, AI-personalized cold
+   email campaigns to get job interviews."
+
+Who it is for:
+  - Primary: final-year / placement-seeking students, bootcamp grads, early
+    career job seekers in India (assumption to confirm -- see Open Decisions).
+  - Secondary: career cells / training institutes that want to offer this to
+    batches (later phase, not in prototype).
+
+Core value:
+  - Solve "I don't know who to email and I can't send 500 emails by hand."
+  - Give students a warm, trackable outbound job-search pipeline with guardrails
+    so they do not get their Gmail account flagged.
+
+Business model (prototype assumption):
+  - One-time "Unlock" payment (e.g. INR 299-499) grants lifetime access to the
+    5,000+ contact database + a starter campaign allowance.
+  - Optional paid "campaign credits" / monthly plan later (do not build now).
+  - Sending happens from the student's own Gmail, so the platform has no per
+    email cost -- revenue is the unlock fee, not email volume.
+
+--------------------------------------------------------------------------------
+2. CURRENT STATE (WHAT ALREADY EXISTS)
+--------------------------------------------------------------------------------
+Built today (do not rebuild):
+  - FastAPI backend (main.py) with ~20 REST endpoints and safety logic.
+  - React 18 + Vite SPA (frontend/src/App.jsx) with 6 screens: Overview,
+    Companies, AI Email Studio, Campaign & Send, Follow-ups, Settings.
+  - SQLite via SQLAlchemy with 3 models: contacts, email_drafts, outreach_events
+    (app/db/models.py).
+  - CSV/XLSX contact import with dedupe and validation (10 MB cap).
+  - AI draft generation via OpenAI-compatible API (Ollama default) with a single
+    anti-hallucination system prompt (app/services/ai_writer.py).
+  - Gmail API sending with resume attachment, OAuth token file, reply matching
+    (app/services/gmail_service.py, app/services/outreach.py).
+  - Strong single-user safety rules: DRY_RUN, approve-only, typed recipient
+    confirmation, per-run/per-day caps, minimum interval (main.py:142-159).
+  - Sample dataset: 82 HR contacts in data/jobreach_company_contacts.xlsx.
+  - Basic pytest suite (tests/).
+
+Critical gaps (must be closed for a public paid product):
+  G1  No auth, no users, no per-user data isolation (app is single-user/local).
+  G2  No payments, pricing, checkout, webhooks, or entitlement gating.
+  G3  Only 82 contacts; no 5,000+ dataset, no data pipeline, no provenance.
+  G4  Gmail OAuth is one machine-local client + shared credentials/token.json;
+      sender profile and caps come from .env and need a restart to change.
+  G5  No automation: no queue, no worker, no scheduler; APScheduler declared but
+      unused. Follow-ups are reminders only. "Campaign" = single draft screen.
+  G6  No resume parsing (only the filename is sent to the LLM).
+  G7  No pagination/search; no migrations; no backups; no CI/CD; no deployment.
+  G8  Security state is unsafe to expose: .env has DRY_RUN=false, a populated
+      Gmail token is committed locally, and the DB has real SENT events.
+  G9  No legal/consent layer: opt-out exists in the model but is not surfaced in
+      the sending flow; no terms/privacy/refund policy; no deliverability plan.
+
+--------------------------------------------------------------------------------
+3. PRODUCT SCOPE -- MINIMUM WORKING PROTOTYPE
+--------------------------------------------------------------------------------
+In scope (must ship for the prototype):
+  1. Student registration, email verification, login/logout, password reset.
+  2. Per-user data isolation (every contact/draft/event/campaign belongs to a
+     user; no cross-user leakage).
+  3. Per-user Gmail connection with a proper OAuth web flow, encrypted token
+     storage, token refresh, and a visible "connected" state.
+  4. Onboarding: student profile + resume upload, editable in the UI (no .env).
+  5. One-time payment ("Unlock") with a real payment provider, signed webhook,
+     and entitlement check that gates access to the 5,000+ database.
+  6. Curated 5,000+ HR contact dataset with search, filters, verified badges,
+     and pagination; locked state shown before payment.
+  7. Campaign builder: select contacts -> generate AI drafts -> approve -> queue.
+  8. Automated sending via a background worker with conservative daily caps,
+     throttling, retries, and per-user progress tracking.
+  9. Follow-up automation + reply/opt-out sync into the dashboard.
+  10. Student dashboard with clear metrics: sent, opened (if available),
+      replied, opted-out, remaining daily quota.
+  11. Safety & compliance basics: opt-out in every email, unsubscribe handling,
+      dry-run mode per user, legal pages, audit log.
+  12. Deployable, monitored, backed-up web app (not localhost-only).
+
+Explicitly OUT of scope for the prototype:
+  - Mobile apps, team/company accounts, role-based admin beyond a simple back office
+  - LinkedIn automation, WhatsApp/SMS, ATS integrations (Naukri/LinkedIn sync)
+  - Runtime web scraping of HR emails (dataset is curated offline)
+  - Advanced analytics, A/B testing, warm-up domains, dedicated IPs
+  - Multi-language UI, gamification, referral program, coupon engine
+  - Subscription billing (one-time unlock only for now)
+
+--------------------------------------------------------------------------------
+4. TARGET USER JOURNEYS (HAPPY PATHS)
+--------------------------------------------------------------------------------
+J1. Sign up and onboard
+    Register -> verify email -> set profile (name, skills, target roles, location)
+    -> upload resume -> land on dashboard.
+
+J2. Connect mail
+    Settings -> "Connect Gmail" -> Google OAuth consent -> token saved encrypted
+    -> settings show connected account + "Send test email (dry-run)" option.
+
+J3. Unlock the database
+    Browse sample (locked) contacts -> click Unlock -> checkout (Razorpay/Stripe)
+    -> payment webhook sets entitlement -> full 5,000+ database unlocked and
+    searchable -> receipt/invoice emailed.
+
+J4. Run a campaign
+    Filter contacts (role, city, company size) -> select N contacts -> "Generate
+    drafts" (background job) -> review/edit/approve -> schedule -> worker sends
+    with caps -> live progress -> follow-ups auto-created -> replies synced.
+
+J5. Stay safe
+    Recipient can opt out (reply "stop" or link); status flips to OPTED_OUT and
+    the contact is permanently excluded from all future campaigns.
+
+--------------------------------------------------------------------------------
+5. DATA MODEL CHANGES (add to app/db/models.py; use Alembic migrations)
+--------------------------------------------------------------------------------
+New tables:
+  users            : id, email (unique), password_hash, full_name, is_verified,
+                     is_admin, created_at, last_login_at
+  oauth_accounts   : id, user_id FK, provider ('gmail'), provider_email,
+                     access_token_enc, refresh_token_enc, expiry, scopes
+  orders           : id, user_id FK, provider, provider_order_id, amount,
+                     currency, status, created_at, paid_at
+  entitlements     : id, user_id FK, kind ('hr_database_unlock'), source_order_id,
+                     granted_at, expires_at (null for lifetime)
+  campaigns        : id, user_id FK, name, status (DRAFT/QUEUED/RUNNING/PAUSED/
+                     COMPLETED), daily_limit, start_at, created_at
+  campaign_contacts: id, campaign_id FK, contact_id FK, draft_id FK, state
+                     (PENDING/GENERATED/APPROVED/SENDING/SENT/FAILED/REPLIED/
+                     OPTED_OUT), scheduled_at, attempts, error
+  jobs             : id, user_id FK, type, payload, status, progress, error,
+                     created_at, updated_at  (background job tracking)
+  audit_logs       : id, user_id FK, action, meta JSON, ip, created_at
+  email_events     : id, contact_id FK, type (SENT/DELIVERED/BOUNCE/OPEN/REPLY/
+                     OPT_OUT), provider_message_id, occurred_at
+  hr_contacts      : curated source dataset (id, company, hr_name, email, role,
+                     location, source, verified_at, verified_status, is_active)
+                     -- seed into per-user contacts on import/unlock
+
+Modify existing tables (add user_id FK + index on every one):
+  contacts, email_drafts, outreach_events
+  contacts: add source ('seed'|'import'|'manual'), company_size, city,
+            verified_status, unsubscribed_at
+  email_drafts: add campaign_id FK, template_id, generation_job_id
+
+Rules:
+  - Every query in main.py and services must be scoped by current_user.id.
+  - Add a DB-level test that user A cannot read/update user B's rows.
+
+--------------------------------------------------------------------------------
+6. ARCHITECTURE CHANGES
+--------------------------------------------------------------------------------
+From: one local uvicorn process, shared .env config, shared token.json, clicks
+      send one at a time, SQLite file on disk.
+To:   a small deployed SaaS:
+
+  [ React SPA ] --HTTPS--> [ FastAPI API ] --SQL--> [ PostgreSQL ]
+                                |                    [ Redis ]
+                                +---enqueue---> [ Worker(s) ] --Gmail API-->
+                                                        student inboxes
+                                +---webhook---> [ Razorpay/Stripe ]
+
+Components to add:
+  - Auth: email+password (bcrypt/argon2), signed session cookie or JWT,
+    email verification, password reset. Use a library (FastAPI-Users or
+    python-jose + passlib); do not hand-roll crypto.
+  - Worker + queue: Celery/RQ/ARQ with Redis. Replace unused APScheduler or use
+    it only for cron-like triggers. Tasks: generate_drafts_batch, send_campaign,
+    schedule_followups, sync_replies, verify_dataset.
+  - Progress: jobs table + polling endpoint (SSE/WebSocket is a phase-2 polish).
+  - Config: replace .env-only settings with DB-backed user settings + secret
+    store (environment/secrets manager for provider keys). Add Alembic.
+  - Storage: object storage (S3-compatible) for resumes; never write uploads to
+    a local folder in production.
+  - Deployment: Dockerfile + docker-compose (api, worker, beat/scheduler, redis,
+    db, nginx/static SPA) or equivalent managed services. GitHub Actions for
+    test + build + deploy. HTTPS, backups, structured logs, error tracking.
+  - Email transport: keep Gmail API per user. Enforce Gmail's consumer limits
+    (~500 sends/day; be conservative: default 25-40/day/user) and surface the
+    remaining quota in the UI. SMTP can be added later; not needed now.
+
+--------------------------------------------------------------------------------
+7. KEY FEATURE DETAILS / ACCEPTANCE CRITERIA
+--------------------------------------------------------------------------------
+EPIC 0 -- SAFETY RESET & FOUNDATIONS (do this first)
+  - Reset .env: DRY_RUN=true; remove/relocate credentials/*; clear real SENT
+    events from the dev DB or use a fresh DB; decide base for the uncommitted UI
+    redesign (commit it or discard it before branching).
+  - Add Alembic, structured logging, basic CI (pytest + build).
+  - Done when: repo is safe to clone, tests pass in CI, app boots with dry-run.
+
+EPIC 1 -- IDENTITY & MULTI-TENANCY
+  - Auth endpoints: /auth/register, /auth/verify, /auth/login, /auth/logout,
+    /auth/forgot-password, /auth/me. Protected routes via dependency.
+  - Add user_id to all tables + scoping helpers; login/register UI pages;
+    react-router for route guards (current App.jsx uses page state only).
+  - Done when: two users can register; user A cannot see/modify user B data;
+    password reset works end-to-end.
+
+EPIC 2 -- PER-USER MAIL CONNECTION
+  - Google OAuth web flow (not InstalledAppFlow desktop), encrypted tokens in
+    oauth_accounts, automatic refresh, per-user profile UI replacing .env fields
+    (main.py:356 GET /api/settings becomes read/write).
+  - "Send test email" in dry-run and real mode with typed confirmation.
+  - Done when: two different students can connect two different Gmail accounts
+    and send/test independently; tokens are never written to disk/plain files.
+
+EPIC 3 -- PAYMENTS & ENTITLEMENT ("UNLOCK")
+  - Pick provider (Razorpay for INR / Stripe for global -- decision needed).
+  - Create order -> checkout -> signed webhook -> orders + entitlements ->
+    unlock gate on dataset endpoints (main.py:179 GET /api/contacts).
+  - Show locked preview + price, receipt, invoice, refund handling.
+  - Idempotent webhook processing; verify signatures; never trust the client.
+  - Done when: a test payment flips entitlement; before payment the full dataset
+    is not returned by any API; after refresh the unlock persists.
+
+EPIC 4 -- 5,000+ HR DATASET
+  - Source/verify contacts from legitimate public or licensed sources (see
+    Risks). Store in hr_contacts with source + verified_at; dedupe by email.
+  - Seed/unlock flow copies verified contacts into the user's contacts table.
+  - UI: search, filters (company, role, city, verified), pagination, locked state.
+  - Done when: 5,000+ unique, verified records load; search/pagination returns
+    fast (<1s); provenance visible; test that locked users see counts only.
+
+EPIC 5 -- CAMPAIGN AUTOMATION
+  - Campaign builder UI + worker tasks: bulk AI draft generation, approve,
+    schedule, send with per-user daily caps/throttle/retry, auto follow-ups,
+    reply + bounce + opt-out sync.
+  - Reuse ai_writer.py prompt; add resume text extraction (PyMuPDF/pdfplumber)
+    so drafts reference real skills; add templates.
+  - Live progress via /jobs/{id}; pause/cancel control; audit log entries.
+  - Done when: a user can queue 50 contacts, leave the page, and see all 50
+    drafted/sent within the configured caps with no duplicates or double sends.
+
+EPIC 6 -- DASHBOARD & STUDENT UX
+  - KPI cards (sent/replied/opted-out/quota), onboarding checklist, campaign
+    progress, clear "what happens next" copy, legal links in footer.
+  - Done when: a first-time student can complete J1->J5 without documentation.
+
+EPIC 7 -- LAUNCH READINESS
+  - Terms, Privacy, Refund policy, Gmail-permission disclosure; opt-out link in
+    every email; sender physical address line; deliverability guidance.
+  - Observability, backups, rate limiting on auth/payment endpoints, support
+    email, onboarding emails.
+  - Done when: app passes a security/abuse review and a 5-student pilot.
+
+--------------------------------------------------------------------------------
+8. MINIMUM PROTOTYPE CHECKLIST ("AT LEAST THESE")
+--------------------------------------------------------------------------------
+[ ] Student can register, verify, and log in.
+[ ] Each student only sees their own data (tested).
+[ ] Student can connect their own Gmail through OAuth, not a shared token.
+[ ] Student can edit profile and upload a resume in the UI.
+[ ] Payment can be made and verified via webhook; entitlement persists.
+[ ] 5,000+ verified HR contacts exist and are locked until payment.
+[ ] Student can search/filter/paginate the unlocked database.
+[ ] Student can bulk-generate and approve AI drafts.
+[ ] A background worker sends campaigns with caps, throttle, and retries.
+[ ] Follow-ups are created automatically; replies and opt-outs are synced.
+[ ] Every email includes an opt-out; OPTED_OUT contacts are never emailed again.
+[ ] Dashboard shows sent/replied/opted-out/quota.
+[ ] App is deployed over HTTPS with backups, logs, and CI.
+[ ] Terms/Privacy/Refund pages and Gmail-permission disclosure are live.
+
+--------------------------------------------------------------------------------
+9. RISKS & MITIGATIONS
+--------------------------------------------------------------------------------
+R1  Gmail suspension / spam complaints (highest risk).
+    Mitigate: conservative caps, plain-text emails, no links in first touch,
+    opt-out in every email, warm-up guidance, dry-run default, bounce handling.
+R2  Dataset legality/quality: scraping personal emails may violate law/ToS.
+    Mitigate: use public company HR addresses or licensed/opt-in sources; keep
+    provenance; suppression list; verify before shipping; legal review.
+R3  Payment compliance / chargebacks: use a provider, not custom card handling;
+    clear refund policy; webhook signature verification.
+R4  Data leak across users: enforce user_id scoping in every query + tests.
+R5  AI hallucination (fake vacancies/claims): keep the existing strict prompt,
+    ground on user-supplied context + parsed resume, human approval required.
+R6  LLM cost at 5,000 drafts: batch jobs, caching, cheaper model, quotas.
+R7  Scope creep: freeze the Out-of-scope list; ship the checklist in section 8.
+
+--------------------------------------------------------------------------------
+10. SUCCESS METRICS (post-launch)
+--------------------------------------------------------------------------------
+Activation : % of signups that verify email and connect Gmail.
+Conversion : % of connected users that complete the unlock payment.
+Engagement : campaigns created, emails sent/user, reply rate, opt-out rate.
+Quality    : bounce rate < 5%, spam complaints near zero, no account bans.
+Business   : unlock conversion, refund rate, CAC vs unlock price.
+
+--------------------------------------------------------------------------------
+11. OPEN DECISIONS FOR REVIEW (please answer before build starts)
+--------------------------------------------------------------------------------
+D1  Pricing: one-time INR 299/499 vs subscription? Free tier/credits? (PM rec:
+    one-time INR 399 unlock, lifetime DB access, 50 starter sends/day.)
+D2  Market/currency: India only (INR/Razorpay) or global (USD/Stripe)?
+D3  Data source for the 5,000+ contacts: licensed vendor, public company
+    careers pages, or institute partner list? Who verifies and signs off?
+D4  Sending account: student's own Gmail only (recommended) or platform-provided
+    sending domains? (Own Gmail keeps cost/reputation with the student.)
+D5  LLM: keep local Ollama, or move to a hosted model for reliability/cost?
+D6  Timeline & team: 1 dev? 8-12 weeks for the prototype? Budget for data?
+D7  Brand/domain, legal entity, and who owns the Gmail OAuth app credentials.
+D8  Base UI: commit the current uncommitted React redesign or restart from the
+    committed version?
+
+--------------------------------------------------------------------------------
+12. SUGGESTED SEQUENCE & ROUGH TIMELINE (1 full-time dev)
+--------------------------------------------------------------------------------
+Week -1  : Decisions D1-D8; legal/data sourcing; reset dev secrets (Epic 0).
+Week 1-2 : Auth + multi-tenancy (Epic 1).
+Week 3   : Per-user Gmail OAuth + profile/resume (Epic 2).
+Week 4   : Payments + entitlement (Epic 3).
+Week 5-6 : 5,000+ dataset + search/pagination (Epic 4).
+Week 7-9 : Campaign worker + automation + AI/resume grounding (Epic 5).
+Week 10  : Dashboard/UX polish + legal pages (Epics 6-7).
+Week 11  : Deploy, CI, monitoring, backups, internal QA.
+Week 12  : 5-student pilot, fix blockers, then release.
+Fast path (~8 weeks): cut advanced filters, reply-sync polish, and admin UI.
+
+================================================================================
+END OF PLAN -- REQUEST FOR REVIEW
+================================================================================
+Please approve or edit sections 3 (scope), 8 (minimum checklist), 11 (open
+decisions), and 12 (timeline). Implementation should not start until D1-D5 and
+D7 are answered, because they change the data model and infrastructure.
