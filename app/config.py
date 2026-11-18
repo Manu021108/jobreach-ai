@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = ""
     smtp_use_tls: bool = True
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_id: str = ""
+    stripe_unlock_amount: int = Field(default=29900, ge=50)
+    stripe_unlock_currency: str = "inr"
+    hr_database_file: str = "data/hr_database.csv"
 
     @property
     def root(self) -> Path:

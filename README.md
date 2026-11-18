@@ -55,6 +55,21 @@ Official guide: https://developers.google.com/identity/protocols/oauth2/web-serv
 
 On first sign-in you will be asked for your full name, target roles, summary, skills, and a PDF resume. These values feed AI drafts and job matching. The resume is stored in the database for your account only and is attached when you send an approved email. Use Settings to update any profile field, replace/remove the resume, or reconnect Gmail.
 
+## 3.2 One-time HR database unlock
+
+The **Unlock** page sells one-time access to the bundled HR contact database through Stripe Checkout. Accounts are gated by a per-user entitlement stored in SQLite; unlocked accounts can search the database and import contacts, while locked accounts only see a company-name preview. Set `HR_DATABASE_FILE` to the full dataset you intend to sell.
+
+Set these values in `.env`:
+
+- `STRIPE_SECRET_KEY`: Stripe secret key.
+- `STRIPE_WEBHOOK_SECRET`: signing secret for the webhook endpoint.
+- `STRIPE_PRICE_ID`: one-time Stripe Price ID. If omitted, `STRIPE_UNLOCK_AMOUNT` and `STRIPE_UNLOCK_CURRENCY` are used to create an inline price.
+- `HR_DATABASE_FILE`: CSV/XLSX path relative to the project root, with at least `company_name` and `email` columns.
+
+Configure Stripe to send checkout events to `https://your-host/api/billing/webhook`. The endpoint verifies the `stripe-signature` header against the raw request body, records processed event IDs to prevent duplicate activation, activates access on a completed paid checkout session, and revokes access when the payment is fully refunded. Keep the webhook secret out of the frontend and never trust a browser redirect as proof of payment.
+
+For local development, Stripe CLI can forward signed events to `http://127.0.0.1:8000/api/billing/webhook`. Use the printed webhook signing secret for `STRIPE_WEBHOOK_SECRET`.
+
 ## 4. AI setup
 
 ### Local Ollama (default)

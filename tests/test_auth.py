@@ -10,6 +10,8 @@ import main
 from app.db import session as db_session
 from app.db.models import Base
 from app.services import auth as auth_service
+from app.services import billing as billing_service
+from app.services import hr_database
 from app.services import outreach as outreach_service
 from app.services import profile_service
 
@@ -24,8 +26,10 @@ def client_factory(monkeypatch):
     monkeypatch.setattr(auth_service, "SessionLocal", factory)
     monkeypatch.setattr(outreach_service, "SessionLocal", factory)
     monkeypatch.setattr(profile_service, "SessionLocal", factory)
+    monkeypatch.setattr(billing_service, "SessionLocal", factory)
     monkeypatch.setattr(main, "SessionLocal", factory)
     monkeypatch.setattr(main, "init_db", lambda: None)
+    monkeypatch.setattr(hr_database, "total_count", lambda: 0)
     return lambda: TestClient(main.app)
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import pandas as pd
-from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -21,7 +21,8 @@ from app.config import settings
 from app.db.models import Contact, OutreachEvent, User
 from app.db.session import SessionLocal, init_db
 from app.services import auth as auth_service
-from app.services import gmail_service, gmail_tokens, profile_service
+from app.services import billing as billing_service
+from app.services import gmail_service, gmail_tokens, hr_database, profile_service
 from app.services.ai_writer import AIWriter
 from app.services.gmail_service import GmailService
 from app.services.security import (
@@ -133,6 +134,10 @@ class ProfileInput(BaseModel):
     target_roles: str = Field(default="", max_length=500)
 
 
+class HRImportInput(BaseModel):
+    limit: int = Field(default=100, ge=1, le=5000)
+
+
 def _iso(value):
     return value.isoformat() if value else None
 
@@ -162,6 +167,12 @@ def get_session_user(session: str | None = Cookie(default=None, alias="jr_sessio
 def get_current_user(user: User = Depends(get_session_user)) -> User:
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verify your email to continue.")
+    return user
+
+
+def require_hr_database_unlock(user: User = Depends(get_current_user)) -> User:
+    if not billing_service.has_entitlement(user.id):
+        raise HTTPException(status_code=402, detail="Unlock the HR database to use this feature.")
     return user
 
 
@@ -707,6 +718,63 @@ def sync_replies(user: User = Depends(get_current_user)):
     return {"updated": count}
 
 
+@app.post("/api/billing/checkout")
+def billing_checkout(user: User = Depends(get_current_user)):
+    try:
+        return billing_service.create_checkout_session(user.id, user.email)
+    except billing_service.BillingError as exc:
+        status_code = 409 if "already" in str(exc).lower() else 503
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request):
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature", "")
+    try:
+        return billing_service.handle_webhook(payload, signature)
+    except billing_service.PaymentVerificationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except billing_service.BillingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/billing/entitlement")
+def billing_entitlement(user: User = Depends(get_current_user)):
+    return {
+        **billing_service.entitlement_status(user.id),
+        "order": billing_service.latest_order(user.id),
+        "amount_total": settings.stripe_unlock_amount,
+        "currency": settings.stripe_unlock_currency.upper(),
+    }
+
+
+@app.get("/api/hr-database")
+def hr_database_rows(
+    query: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    user: User = Depends(get_current_user),
+):
+    unlocked = billing_service.has_entitlement(user.id)
+    total = hr_database.total_count()
+    result = {
+        "total": total,
+        "unlocked": unlocked,
+        "preview": [] if unlocked else hr_database.preview(),
+    }
+    if unlocked:
+        result["rows"] = hr_database.search(query, max(1, min(limit, 200)), max(0, offset))
+    return result
+
+
+@app.post("/api/hr-database/import")
+def import_hr_database(payload: HRImportInput, user: User = Depends(require_hr_database_unlock)):
+    records = hr_database.import_records(payload.limit)
+    added, skipped, errors = add_contacts(records, user.id)
+    return {"added": added, "skipped": skipped, "errors": errors[:10]}
+
+
 @app.get("/api/profile")
 def get_profile(user: User = Depends(get_current_user)):
     data = profile_service.profile_dict(user.id)
@@ -792,6 +860,10 @@ def get_settings(user: User = Depends(get_current_user)):
         "min_seconds_between_emails": settings.min_seconds_between_emails,
         "resume_name": profile["resume_name"],
         "onboarding": profile_service.onboarding_status(user.id),
+        "hr_database_unlocked": billing_service.has_entitlement(user.id),
+        "hr_database_count": hr_database.total_count(),
+        "unlock_amount": settings.stripe_unlock_amount,
+        "unlock_currency": settings.stripe_unlock_currency.upper(),
         "gmail_connected": gmail_status["connected"],
         "gmail_email": gmail_status["email"],
         "gmail_expires_at": gmail_status["expires_at"],

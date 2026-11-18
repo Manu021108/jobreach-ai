@@ -80,6 +80,41 @@ class GmailConnection(Base):
     user: Mapped["User"] = relationship(back_populates="gmail_connection")
 
 
+class PaymentOrder(Base):
+    __tablename__ = "payment_orders"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    stripe_session_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    stripe_payment_intent_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    amount_total: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(10), default="")
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    user: Mapped["User"] = relationship()
+
+
+class Entitlement(Base):
+    __tablename__ = "entitlements"
+    __table_args__ = (UniqueConstraint("user_id", "kind", name="uq_entitlement_user_kind"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=False)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("payment_orders.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProcessedWebhookEvent(Base):
+    __tablename__ = "processed_webhook_events"
+    event_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(100), default="")
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Contact(Base):
     __tablename__ = "contacts"
     __table_args__ = (UniqueConstraint("owner_id", "email", "company_name", name="uq_contact_owner_email_company"),)

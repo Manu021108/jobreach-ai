@@ -10,7 +10,8 @@ import main
 from app.db import session as db_session
 from app.db.models import Base
 from app.services import auth as auth_service
-from app.services import gmail_tokens
+from app.services import billing as billing_service
+from app.services import gmail_tokens, hr_database
 from app.services import outreach as outreach_service
 from app.services import profile_service
 
@@ -24,9 +25,10 @@ def client_factory(monkeypatch):
     engine = create_engine(f"sqlite:///{database}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
-    for module in (db_session, auth_service, gmail_tokens, outreach_service, profile_service, main):
+    for module in (db_session, auth_service, gmail_tokens, outreach_service, profile_service, billing_service, main):
         monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr(main, "init_db", lambda: None)
+    monkeypatch.setattr(hr_database, "total_count", lambda: 0)
     monkeypatch.setattr(profile_service, "claim_legacy_resume", lambda user_id: None)
     return lambda: TestClient(main.app)
 

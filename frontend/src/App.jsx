@@ -7,6 +7,7 @@ const navigation = [
   { id: "jobs", label: "Job Match", icon: "jobs" },
   { id: "campaign", label: "Campaign & Send", icon: "campaign" },
   { id: "followups", label: "Follow-ups", icon: "followups" },
+  { id: "unlock", label: "Unlock", icon: "shield" },
   { id: "settings", label: "Profile & Settings", icon: "settings" },
 ];
 
@@ -293,12 +294,15 @@ function Onboarding({ onCompleted }) {
 function App() {
   const query = new URLSearchParams(window.location.search);
   const gmailNotice = query.get("gmail");
-  const [page, setPage] = useState(gmailNotice ? "settings" : "overview");
+  const unlockNotice = query.get("unlock");
+  const [page, setPage] = useState(gmailNotice ? "settings" : unlockNotice ? "unlock" : "overview");
   const [dashboard, setDashboard] = useState(null);
   const [contacts, setContacts] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [followups, setFollowups] = useState([]);
   const [settings, setSettings] = useState(null);
+  const [billing, setBilling] = useState(null);
+  const [hrDatabase, setHrDatabase] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState("");
@@ -321,17 +325,25 @@ function App() {
     if (gmailNotice === "error") setNotice(query.get("detail") || "Gmail connection failed. Please try again.");
     if (gmailNotice) window.history.replaceState({}, document.title, window.location.pathname);
   }, []);
+  useEffect(() => {
+    if (unlockNotice === "success") setNotice("Payment received. Your unlock will activate when Stripe confirms it.");
+    if (unlockNotice === "cancel") setNotice("Checkout cancelled. You can unlock any time.");
+    if (unlockNotice) window.history.replaceState({}, document.title, window.location.pathname);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
-      const [overview, contactRows, draftRows, followupRows, config] = await Promise.all([
+      const [overview, contactRows, draftRows, followupRows, config, billingStatus, database] = await Promise.all([
         api("/dashboard"), api("/contacts"), api("/drafts"), api("/followups"), api("/settings"),
+        api("/billing/entitlement"), api("/hr-database"),
       ]);
       setDashboard(overview);
       setContacts(contactRows);
       setDrafts(draftRows);
       setFollowups(followupRows);
       setSettings(config);
+      setBilling(billingStatus);
+      setHrDatabase(database);
       setError("");
     } catch (e) { setError(e.message); }
   }, []);
@@ -344,7 +356,7 @@ function App() {
 
   const signOut = async () => {
     try { await api("/auth/logout", { method: "POST" }); } catch { /* ignore */ }
-    setUser(null); setDashboard(null); setContacts([]); setDrafts([]); setFollowups([]); setSettings(null);
+    setUser(null); setDashboard(null); setContacts([]); setDrafts([]); setFollowups([]); setSettings(null); setBilling(null); setHrDatabase(null);
   };
 
   if (!authReady) return <div className="auth-loading">Loading JobReach AI…</div>;
@@ -434,12 +446,13 @@ function App() {
           {error && <div className="alert alert-error" role="alert"><span>!</span><p>{error}</p><button onClick={() => setError("")} aria-label="Dismiss"><Icon name="x" /></button></div>}
           {notice && <div className="alert alert-success" role="status"><span>✓</span><p>{notice}</p><button onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="x" /></button></div>}
           {page === "overview" && <Overview dashboard={dashboard} onNavigate={setPage} />}
-          {page === "companies" && <Companies contacts={contacts} busy={busy} run={run} />}
+          {page === "companies" && <Companies contacts={contacts} settings={settings} busy={busy} run={run} onNavigate={setPage} />}
           {page === "studio" && <Studio contacts={contacts} busy={busy} run={run} />}
           {page === "jobs" && <JobMatch contacts={contacts} busy={busy} run={run} onNavigate={setPage} />}
           {page === "campaign" && <Campaign drafts={drafts} settings={settings} busy={busy} run={run} />}
           {page === "followups" && <FollowUps items={followups} busy={busy} run={run} />}
-          {page === "settings" && <SettingsPage settings={settings} busy={busy} run={run} onUserUpdate={setUser} />}
+          {page === "unlock" && <UnlockPage database={hrDatabase} billing={billing} settings={settings} busy={busy} run={run} />}
+          {page === "settings" && <SettingsPage settings={settings} busy={busy} run={run} onUserUpdate={setUser} onNavigate={setPage} />}
         </div>
         <footer className="footer"><span>JobReach AI</span><span>Private by design · Your data stays on this device</span></footer>
       </main>
@@ -540,7 +553,93 @@ function ContactTable({ contacts, compact = false }) {
   );
 }
 
-function Companies({ contacts, busy, run }) {
+function UnlockPage({ database, billing, settings, busy, run }) {
+  const [query, setQuery] = useState("");
+  const [rows, setRows] = useState(database?.rows || []);
+  useEffect(() => { setRows(database?.rows || []); }, [database]);
+  const unlocked = Boolean(database?.unlocked || settings?.hr_database_unlocked || billing?.unlocked);
+  const total = database?.total ?? settings?.hr_database_count ?? 0;
+  const amount = billing?.amount_total ?? settings?.unlock_amount ?? 0;
+  const currency = billing?.currency || settings?.unlock_currency || "INR";
+  const price = `${currency} ${(amount / 100).toFixed(amount % 100 ? 2 : 0)}`;
+
+  const checkout = async () => {
+    const result = await run(() => api("/billing/checkout", { method: "POST" }), "Opening Stripe checkout…", false);
+    if (result?.url) window.location.assign(result.url);
+  };
+  const search = async () => {
+    const result = await run(() => api(`/hr-database?query=${encodeURIComponent(query)}`), null, false);
+    if (result) setRows(result.rows || []);
+  };
+  const importContacts = (limit) => run(
+    () => api("/hr-database/import", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit }),
+    }),
+    (result) => `Imported ${result.added} contacts; skipped ${result.skipped}.`,
+  );
+
+  return (
+    <>
+      <PageHeading eyebrow="One-time unlock" title="Unlock the HR database" description="Pay once to search and import the curated HR contact database into your private workspace." />
+      <div className="settings-grid">
+        <section className="panel">
+          <div className="panel-header"><div><h2 className="section-heading">Bundled contact database</h2><p className="panel-subtitle">Lifetime access after a single Stripe payment</p></div><span className="panel-number">01</span></div>
+
+          <div className="metric-grid">
+            <div className="metric-card"><span>Total contacts</span><strong>{total.toLocaleString()}</strong></div>
+            <div className="metric-card"><span>Your access</span><strong>{unlocked ? "Unlocked" : "Locked"}</strong></div>
+          </div>
+          {!unlocked && (
+            <>
+              <div className="field-note"><strong>Available companies:</strong> {(database?.preview || []).map((item) => item.company_name).join(" · ") || "Loading preview…"}</div>
+              <button className="button button-primary full-button" style={{ marginTop: 10 }} disabled={busy} onClick={checkout}>Unlock for {price}</button>
+            </>
+          )}
+          {unlocked && (
+            <>
+              <div className="auth-message">Unlocked. Search below or import contacts into your pipeline.</div>
+              <div className="button-row" style={{ marginTop: 8 }}>
+                <button className="button button-secondary" disabled={busy} onClick={() => importContacts(100)}>Import 100</button>
+                <button className="button button-secondary" disabled={busy} onClick={() => importContacts(500)}>Import 500</button>
+              </div>
+            </>
+          )}
+          {billing?.order?.status && <div className="field-note"><strong>Latest payment:</strong> {billing.order.status}</div>}
+        </section>
+        <section className="panel">
+          <div className="panel-header"><div><h2 className="section-heading">Search database</h2><p className="panel-subtitle">{unlocked ? "Find companies and contacts by name, email, or role" : "Full search and emails unlock after payment"}</p></div><span className="panel-number">02</span></div>
+          {unlocked ? (
+            <>
+              <div className="resume-upload">
+                <input type="text" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Company, email, or role" />
+                <button className="button button-secondary" disabled={busy} onClick={search}>Search</button>
+              </div>
+              <div className="table-wrap" style={{ marginTop: 10 }}>
+                <table>
+                  <thead><tr><th>Company</th><th>Contact</th><th>Role</th></tr></thead>
+                  <tbody>
+                    {rows.map((item, index) => (
+                      <tr key={`${item.email}-${index}`}>
+                        <td><div className="table-primary">{item.company_name}</div></td>
+                        <td>{item.email}</td>
+                        <td>{item.role || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {rows.length === 0 && <div className="table-empty">No contacts match that search.</div>}
+            </>
+          ) : (
+            <div className="empty-state"><div className="empty-icon"><Icon name="shield" /></div><strong>Database locked</strong><p>Company names are shown as a preview. Emails and full search require the one-time unlock.</p></div>
+          )}
+        </section>
+      </div>
+    </>
+  );
+}
+
+function Companies({ contacts, settings, busy, run, onNavigate }) {
   const [filter, setFilter] = useState("All");
   const [file, setFile] = useState(null);
   const [selected, setSelected] = useState("");
@@ -555,7 +654,12 @@ function Companies({ contacts, busy, run }) {
   };
   return (
     <>
-      <PageHeading eyebrow="Your contact database" title="Companies & contacts" description="Keep your outreach list organized, relevant, and easy to review." />
+      <PageHeading
+        eyebrow="Your contact database"
+        title="Companies & contacts"
+        description="Keep your outreach list organized, relevant, and easy to review."
+        action={!settings?.hr_database_unlocked && <button className="button button-secondary" onClick={() => onNavigate("unlock")}>Unlock HR database</button>}
+      />
       <div className="split-grid">
         <section className="panel">
           <div className="panel-header"><div><h2 className="section-heading">Import companies</h2><p className="panel-subtitle">Bring in a CSV or Excel contact list</p></div><span className="panel-number">01</span></div>
@@ -914,7 +1018,7 @@ function FollowUps({ items, busy, run }) {
   );
 }
 
-function SettingsPage({ settings, busy, run, onUserUpdate }) {
+function SettingsPage({ settings, busy, run, onUserUpdate, onNavigate }) {
   const [resume, setResume] = useState(null);
   const [profile, setProfile] = useState(null);
   const [testResult, setTestResult] = useState("");
@@ -1040,6 +1144,16 @@ function SettingsPage({ settings, busy, run, onUserUpdate }) {
             <div><span>Send spacing</span><strong>{settings?.min_seconds_between_emails ?? "—"}s</strong></div>
           </div>
           <div className="config-note">Keep limits low. Change <code>DRY_RUN=false</code> in <code>.env</code> only after using preview mode and verifying your Gmail setup.</div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-header"><div><h2 className="section-heading">Database unlock</h2><p className="panel-subtitle">One-time payment for the bundled HR contact database</p>
+</div><span className="panel-number">05</span></div>
+          <div className="provider-details">
+            <div><span>Access</span><strong>{settings?.hr_database_unlocked ? "Unlocked" : "Locked"}</strong></div>
+            <div><span>Database size</span><strong>{(settings?.hr_database_count ?? 0).toLocaleString()}</strong></div>
+          </div>
+          <button className="button button-secondary" onClick={() => onNavigate("unlock")}>Manage unlock</button>
         </section>
       </div>
     </>
