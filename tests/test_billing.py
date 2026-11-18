@@ -138,6 +138,39 @@ def _send_webhook(client, event):
     return client.post("/api/billing/webhook", content=event, headers={"stripe-signature": "valid"})
 
 
+def test_free_unlock_grants_database_access(client_factory, monkeypatch):
+    client, _ = client_factory()
+    monkeypatch.setattr(settings, "allow_free_unlock", True)
+    _signup(client, "free@billing.example")
+
+    entitlement = client.get("/api/billing/entitlement").json()
+    assert entitlement["free_unlock_enabled"] is True
+    assert entitlement["unlocked"] is False
+    assert client.get("/api/hr-database").json()["unlocked"] is False
+
+    response = client.post("/api/billing/free-unlock")
+    assert response.status_code == 200
+    assert response.json()["unlocked"] is True
+    assert response.json()["free"] is True
+    assert response.json()["imported"] == 2
+
+    unlocked = client.get("/api/hr-database").json()
+    assert unlocked["unlocked"] is True
+    assert unlocked["rows"] == DATABASE_ROWS
+    assert len(client.get("/api/contacts").json()) == 2
+    assert client.post("/api/billing/free-unlock").json()["imported"] == 0
+
+
+def test_free_unlock_respects_disabled_setting(client_factory, monkeypatch):
+    client, _ = client_factory()
+    monkeypatch.setattr(settings, "allow_free_unlock", False)
+    _signup(client, "free-disabled@billing.example")
+
+    assert client.get("/api/billing/entitlement").json()["free_unlock_enabled"] is False
+    assert client.post("/api/billing/free-unlock").status_code == 403
+    assert client.get("/api/hr-database").json()["unlocked"] is False
+
+
 def test_checkout_webhook_and_entitlement_gate_database(client_factory, monkeypatch):
     client, stripe = client_factory()
     monkeypatch.setattr(billing_service, "_client", lambda: stripe)

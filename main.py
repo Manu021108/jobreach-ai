@@ -892,6 +892,16 @@ def billing_checkout(user: User = Depends(get_current_user)):
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
+@app.post("/api/billing/free-unlock")
+def billing_free_unlock(user: User = Depends(get_current_user)):
+    if not settings.allow_free_unlock:
+        raise HTTPException(status_code=403, detail="Free unlock is not available.")
+    entitlement = billing_service.grant_free_access(user.id)
+    records = hr_database.import_records(limit=5000)
+    added, skipped, errors = add_contacts(records, user.id)
+    return {**entitlement, "imported": added, "skipped": skipped, "errors": errors[:10]}
+
+
 @app.post("/api/billing/webhook")
 async def billing_webhook(request: Request):
     payload = await request.body()
@@ -911,6 +921,7 @@ def billing_entitlement(user: User = Depends(get_current_user)):
         "order": billing_service.latest_order(user.id),
         "amount_total": settings.stripe_unlock_amount,
         "currency": settings.stripe_unlock_currency.upper(),
+        "free_unlock_enabled": settings.allow_free_unlock,
     }
 
 

@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     stripe_price_id: str = ""
     stripe_unlock_amount: int = Field(default=29900, ge=50)
     stripe_unlock_currency: str = "inr"
+    allow_free_unlock: bool = True
     hr_database_file: str = "data/hr_database.csv"
 
     @property

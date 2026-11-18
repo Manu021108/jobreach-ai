@@ -55,6 +55,23 @@ def has_entitlement(user_id, kind=HR_DATABASE):
         return bool(row and row.active)
 
 
+def grant_free_access(user_id, kind=HR_DATABASE):
+    with SessionLocal() as db:
+        entitlement = db.scalar(
+            select(Entitlement).where(Entitlement.user_id == int(user_id), Entitlement.kind == kind)
+        )
+        if not entitlement:
+            entitlement = Entitlement(user_id=int(user_id), kind=kind)
+            db.add(entitlement)
+        entitlement.active = True
+        entitlement.order_id = None
+        entitlement.revoked_at = None
+        db.commit()
+        db.refresh(entitlement)
+        activated_at = entitlement.updated_at.isoformat() if entitlement.updated_at else None
+    return {"unlocked": True, "kind": kind, "activated_at": activated_at, "free": True}
+
+
 def entitlement_status(user_id, kind=HR_DATABASE):
     with SessionLocal() as db:
         row = db.scalar(select(Entitlement).where(Entitlement.user_id == int(user_id), Entitlement.kind == kind))
