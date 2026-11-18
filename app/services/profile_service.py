@@ -99,6 +99,7 @@ def ai_profile(user_id):
     data = profile_dict(user_id) or {}
     return {
         "name": data.get("full_name", ""),
+        "email": data.get("email", ""),
         "location": data.get("location", ""),
         "summary": data.get("summary", ""),
         "skills": data.get("skills", ""),
