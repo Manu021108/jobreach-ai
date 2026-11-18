@@ -60,7 +60,7 @@ class GmailService:
         self.service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
         return self
 
-    def send(self, recipient: str, subject: str, body: str, attachment: Path):
+    def send(self, recipient: str, subject: str, body: str, attachment: Path, sender_name: str | None = None):
         if not self.service:
             self.connect()
         if not attachment.exists() or attachment.suffix.lower() != ".pdf":
@@ -69,9 +69,8 @@ class GmailService:
         message["To"] = recipient
         message["Subject"] = subject
         if self.email:
-            message["From"] = (
-                f"{settings.sender_name} <{self.email}>" if settings.sender_name else self.email
-            )
+            display_name = sender_name if sender_name is not None else settings.sender_name
+            message["From"] = f"{display_name} <{self.email}>" if display_name else self.email
         message.set_content(body)
         mime_type, _ = mimetypes.guess_type(str(attachment))
         maintype, subtype = (mime_type or "application/pdf").split("/", 1)

@@ -11,6 +11,7 @@ from app.db import session as db_session
 from app.db.models import Base
 from app.services import auth as auth_service
 from app.services import outreach as outreach_service
+from app.services import profile_service
 
 
 @pytest.fixture
@@ -22,6 +23,7 @@ def client_factory(monkeypatch):
     monkeypatch.setattr(db_session, "SessionLocal", factory)
     monkeypatch.setattr(auth_service, "SessionLocal", factory)
     monkeypatch.setattr(outreach_service, "SessionLocal", factory)
+    monkeypatch.setattr(profile_service, "SessionLocal", factory)
     monkeypatch.setattr(main, "SessionLocal", factory)
     monkeypatch.setattr(main, "init_db", lambda: None)
     return lambda: TestClient(main.app)

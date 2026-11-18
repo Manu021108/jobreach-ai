@@ -17,10 +17,13 @@ def _strip_placeholders(text):
 
 
 class AIWriter:
-    def __init__(self):
+    def __init__(self, profile=None):
         self.client = OpenAI(base_url=settings.ai_base_url, api_key=settings.ai_api_key)
+        self.profile = profile
 
     def _profile(self):
+        if self.profile:
+            return self.profile
         return {
             "name": settings.sender_name,
             "location": settings.sender_location,

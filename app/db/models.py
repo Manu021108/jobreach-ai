@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -17,6 +17,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(500), nullable=False)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     verification_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     verification_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reset_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -30,6 +31,39 @@ class User(Base):
     gmail_connection: Mapped["GmailConnection | None"] = relationship(
         back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
+    student_profile: Mapped["StudentProfile | None"] = relationship(
+        back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
+    resume: Mapped["Resume | None"] = relationship(
+        back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class StudentProfile(Base):
+    __tablename__ = "student_profiles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    phone: Mapped[str] = mapped_column(String(50), default="")
+    location: Mapped[str] = mapped_column(String(200), default="")
+    linkedin: Mapped[str] = mapped_column(String(500), default="")
+    github: Mapped[str] = mapped_column(String(500), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    skills: Mapped[str] = mapped_column(Text, default="")
+    target_roles: Mapped[str] = mapped_column(String(500), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    user: Mapped["User"] = relationship(back_populates="student_profile")
+
+
+class Resume(Base):
+    __tablename__ = "resumes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    filename: Mapped[str] = mapped_column(String(300), nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    user: Mapped["User"] = relationship(back_populates="resume")
 
 
 class GmailConnection(Base):

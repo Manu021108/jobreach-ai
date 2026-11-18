@@ -25,6 +25,7 @@ def _ensure_columns():
         },
         "job_postings": {"owner_id": "ALTER TABLE job_postings ADD COLUMN owner_id INTEGER"},
         "outreach_events": {"owner_id": "ALTER TABLE outreach_events ADD COLUMN owner_id INTEGER"},
+        "users": {"onboarding_completed": "ALTER TABLE users ADD COLUMN onboarding_completed BOOLEAN DEFAULT 1"},
     }
     for table, columns in required.items():
         if table not in tables:

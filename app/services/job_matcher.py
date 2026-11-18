@@ -21,19 +21,20 @@ SKILL_GROUPS = {
 }
 
 
-def _configured_skills():
-    return [item.strip() for item in settings.skills.split(",") if item.strip()]
+def _configured_skills(profile=None):
+    source = profile.get("skills", "") if profile else settings.skills
+    return [item.strip() for item in str(source).split(",") if item.strip()]
 
 
 def _mentions(text, keywords):
     return any(re.search(pattern, text) for pattern in keywords)
 
 
-def match_job(job):
+def match_job(job, profile=None):
     title = str(job.title or "").lower()
     description = str(job.description or "")[:12000].lower()
     text = f"{title} {description}"
-    configured = _configured_skills()
+    configured = _configured_skills(profile)
 
     matched = set()
     reasons = []
@@ -55,7 +56,8 @@ def match_job(job):
     labels = list(dict.fromkeys(list(SKILL_GROUPS) + configured))
     missing = [label for label in labels if label not in matched]
     score = round(100 * len(matched) / len(labels)) if labels else 0
-    if any(role.strip().lower() in title for role in settings.target_roles.split(",") if role.strip()):
+    target_roles = profile.get("target_roles", "") if profile else settings.target_roles
+    if any(role.strip().lower() in title for role in str(target_roles).split(",") if role.strip()):
         reasons.insert(0, "Job title matches your target roles")
         score = min(100, score + 5)
     return {

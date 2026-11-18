@@ -585,6 +585,11 @@ select { cursor: pointer; }
 .auth-submit { margin-top: 5px; }
 .auth-footnote { margin-top: 6px; text-align: center; font-size: 11px; color: var(--color-text-secondary); }
 .auth-loading { min-height: 100vh; display: grid; place-items: center; color: var(--color-text-secondary); font-size: 12px; }
+.onboarding-card { width: min(680px, 100%); max-height: calc(100vh - 48px); overflow: auto; }
+.onboarding-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
+.onboarding-grid .field-label { margin-top: 4px; }
+.field-full { grid-column: 1 / -1; }
+.settings-profile-grid { margin-top: 10px; margin-bottom: 10px; }
 
 @media (max-width: 1100px) {
   :root { --sidebar-width: 200px; }
@@ -603,7 +608,7 @@ select { cursor: pointer; }
   .nav-count { display: none; }
   .sidebar-bottom { width: 100%; }
   .user-chip { justify-content: center; padding: 9px 0 0; border-top: 0; }
-  .split-grid, .settings-grid, .right-column { grid-template-columns: 1fr; }
+  .split-grid, .settings-grid, .onboarding-grid, .right-column { grid-template-columns: 1fr; }
   .page-heading { align-items: flex-start; flex-direction: column; }
   .page-title { font-size: 18px; }
   .followup-row { grid-template-columns: 1fr; align-items: flex-start; }

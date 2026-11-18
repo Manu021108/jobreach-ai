@@ -13,6 +13,7 @@ from app.db.models import Base, GmailConnection
 from app.services import auth as auth_service
 from app.services import gmail_service, gmail_tokens
 from app.services import outreach as outreach_service
+from app.services import profile_service
 
 
 @pytest.fixture
@@ -21,7 +22,7 @@ def client_factory(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{database}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
-    for module in (db_session, auth_service, gmail_tokens, main, outreach_service):
+    for module in (db_session, auth_service, gmail_tokens, main, outreach_service, profile_service):
         monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr(main, "init_db", lambda: None)
     return lambda: TestClient(main.app)

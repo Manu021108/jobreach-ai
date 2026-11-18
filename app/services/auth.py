@@ -6,7 +6,7 @@ from sqlalchemy import func, select, update
 from app.config import settings
 from app.db.models import Contact, EmailDraft, JobPosting, OutreachEvent, User
 from app.db.session import SessionLocal
-from app.services import mailer, security
+from app.services import mailer, profile_service, security
 
 
 def _now():
@@ -65,6 +65,8 @@ def register(name, email, password):
         if is_first_user:
             claim_legacy_data(db, user.id)
         db.commit()
+        if is_first_user:
+            profile_service.claim_legacy_resume(user.id)
         db.refresh(user)
 
     sent = mailer.send_verification_email(user.email, token)

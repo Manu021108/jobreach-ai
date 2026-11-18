@@ -207,6 +207,90 @@ function VerificationPanel({ user, initialToken = "", onVerified }) {
   );
 }
 
+const onboardingFields = ["full_name", "phone", "location", "linkedin", "github", "summary", "skills", "target_roles"];
+
+function Onboarding({ onCompleted }) {
+  const [form, setForm] = useState({
+    full_name: "", phone: "", location: "", linkedin: "", github: "",
+    summary: "", skills: "", target_roles: "",
+  });
+  const [resume, setResume] = useState(null);
+  const [resumeName, setResumeName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api("/profile").then((data) => {
+      setForm(Object.fromEntries(onboardingFields.map((field) => [field, data[field] || ""])));
+      if (data.resume_name) setResumeName(data.resume_name);
+    }).catch(() => {});
+  }, []);
+
+  const setField = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
+  const jsonBody = () => ({
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form),
+  });
+  const profileReady = Boolean(form.full_name.trim() && form.summary.trim() && form.skills.trim() && form.target_roles.trim());
+
+  const saveProfile = async () => {
+    setBusy(true); setError("");
+    try { await api("/profile", jsonBody()); }
+    catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const uploadResume = async () => {
+    if (!resume) return;
+    setBusy(true); setError("");
+    try {
+      const body = new FormData();
+      body.append("file", resume);
+      const result = await api("/profile/resume", { method: "POST", body });
+      setResumeName(result.resume_name);
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const finish = async () => {
+    setBusy(true); setError("");
+    try {
+      const result = await api("/onboarding/complete", { method: "POST" });
+      onCompleted(result.user);
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="auth-shell">
+      <form className="auth-card onboarding-card" onSubmit={(event) => event.preventDefault()}>
+        <div className="brand-mark auth-mark">JR</div>
+        <h1 className="auth-title">Set up your profile</h1>
+        <p className="auth-subtitle">Your profile and resume are saved to your account. You can edit everything later in Settings.</p>
+        {error && <div className="alert alert-error" role="alert"><span>!</span><p>{error}</p></div>}
+        <div className="onboarding-grid">
+          <label className="field-label">Full name<input value={form.full_name} onChange={setField("full_name")} required /></label>
+          <label className="field-label">Phone<input value={form.phone} onChange={setField("phone")} /></label>
+          <label className="field-label">Location<input value={form.location} onChange={setField("location")} /></label>
+          <label className="field-label">LinkedIn<input value={form.linkedin} onChange={setField("linkedin")} /></label>
+          <label className="field-label">GitHub<input value={form.github} onChange={setField("github")} /></label>
+          <label className="field-label">Target roles<input value={form.target_roles} onChange={setField("target_roles")} placeholder="Web Developer, Django Developer" required /></label>
+          <label className="field-label field-full">Profile summary<textarea rows="3" value={form.summary} onChange={setField("summary")} placeholder="Short introduction used in AI drafts" required /></label>
+          <label className="field-label field-full">Skills<input value={form.skills} onChange={setField("skills")} placeholder="Django, React, Full-Stack Development" required /></label>
+        </div>
+        <label className="field-label">Resume (PDF)<input type="file" accept=".pdf,application/pdf" onChange={(event) => setResume(event.target.files?.[0] || null)} /></label>
+        {resumeName && <div className="auth-message">{resumeName} uploaded.</div>}
+        <div className="button-row">
+          <button className="button button-secondary" disabled={busy || !profileReady} type="button" onClick={saveProfile}>Save profile</button>
+          <button className="button button-secondary" disabled={busy || !resume} type="button" onClick={uploadResume}>Upload resume</button>
+        </div>
+        <button className="button button-primary full-button auth-submit" disabled={busy || !profileReady || !resumeName} type="button" onClick={finish}>
+          {busy ? <><span className="spinner" /> Working…</> : "Enter workspace"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function App() {
   const query = new URLSearchParams(window.location.search);
   const gmailNotice = query.get("gmail");
@@ -285,6 +369,9 @@ function App() {
       />
     );
   }
+  if (!user.onboarding_completed) {
+    return <Onboarding onCompleted={(next) => { setUser(next); setPage("overview"); }} />;
+  }
 
   const run = async (operation, successMessage, thenRefresh = true) => {
     setBusy(true); setError(""); setNotice(null);
@@ -353,7 +440,7 @@ function App() {
           {page === "jobs" && <JobMatch contacts={contacts} busy={busy} run={run} onNavigate={setPage} />}
           {page === "campaign" && <Campaign drafts={drafts} settings={settings} busy={busy} run={run} />}
           {page === "followups" && <FollowUps items={followups} busy={busy} run={run} />}
-          {page === "settings" && <SettingsPage settings={settings} busy={busy} run={run} />}
+          {page === "settings" && <SettingsPage settings={settings} busy={busy} run={run} onUserUpdate={setUser} />}
         </div>
         <footer className="footer"><span>JobReach AI</span><span>Private by design · Your data stays on this device</span></footer>
       </main>
@@ -828,15 +915,37 @@ function FollowUps({ items, busy, run }) {
   );
 }
 
-function SettingsPage({ settings, busy, run }) {
+function SettingsPage({ settings, busy, run, onUserUpdate }) {
   const [resume, setResume] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [testResult, setTestResult] = useState("");
+  useEffect(() => {
+    if (!settings) return;
+    setProfile({
+      full_name: settings.sender_name || "",
+      phone: settings.phone || "",
+      location: settings.location || "",
+      linkedin: settings.linkedin || "",
+      github: settings.github || "",
+      summary: settings.profile_summary || "",
+      skills: settings.skills || "",
+      target_roles: settings.target_roles || "",
+    });
+  }, [settings]);
+  const setProfileField = (key) => (event) => setProfile((current) => ({ ...current, [key]: event.target.value }));
+  const saveProfile = () => run(
+    () => api("/profile", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(profile),
+    }),
+    (result) => { onUserUpdate?.(result.user); return "Profile saved."; },
+  );
   const uploadResume = () => {
     if (!resume) return;
     const form = new FormData();
     form.append("file", resume);
-    run(() => api("/settings/resume", { method: "POST", body: form }), (r) => `Resume saved: ${r.resume_name}`);
+    run(() => api("/profile/resume", { method: "POST", body: form }), (r) => `Resume saved: ${r.resume_name}`);
   };
+  const removeResume = () => run(() => api("/profile/resume", { method: "DELETE" }), "Resume removed.");
   const testAi = async () => {
     const result = await run(() => api("/settings/test-ai", { method: "POST" }), (d) => `AI connection successful: ${d.response}`, false);
     if (result) setTestResult(result.response);
@@ -852,27 +961,36 @@ function SettingsPage({ settings, busy, run }) {
       <PageHeading eyebrow="Local configuration" title="Settings & integrations" description="Manage your profile, resume, and connected services." />
       <div className="settings-grid">
         <section className="panel">
-          <div className="panel-header"><div><h2 className="section-heading">Sender profile</h2><p className="panel-subtitle">Profile details used to personalize AI drafts</p></div><span className="panel-number">01</span></div>
+          <div className="panel-header"><div><h2 className="section-heading">Student profile</h2><p className="panel-subtitle">Editable profile used to personalize AI drafts</p></div><span className="panel-number">01</span></div>
           <div className="settings-profile">
-            <div className="avatar avatar-large">{settings?.sender_name?.charAt(0) || "J"}</div>
-            <div className="user-meta"><strong>{settings?.sender_name || "Not configured"}</strong><small>{settings?.sender_email}</small></div>
+            <div className="avatar avatar-large">{profile?.full_name?.charAt(0) || "J"}</div>
+            <div className="user-meta"><strong>{profile?.full_name || "Not configured"}</strong><small>{settings?.sender_email}</small></div>
           </div>
-          <div className="profile-detail"><span>Profile summary</span><p>{settings?.profile_summary || "—"}</p></div>
-          <div className="profile-detail"><span>Skills</span><p>{settings?.skills || "—"}</p></div>
-          <div className="config-note">Edit sender details in your local <code>.env</code> file, then restart the API.</div>
+          <div className="onboarding-grid settings-profile-grid">
+            <label className="field-label">Full name<input value={profile?.full_name || ""} onChange={setProfileField("full_name")} /></label>
+            <label className="field-label">Phone<input value={profile?.phone || ""} onChange={setProfileField("phone")} /></label>
+            <label className="field-label">Location<input value={profile?.location || ""} onChange={setProfileField("location")} /></label>
+            <label className="field-label">LinkedIn<input value={profile?.linkedin || ""} onChange={setProfileField("linkedin")} /></label>
+            <label className="field-label">GitHub<input value={profile?.github || ""} onChange={setProfileField("github")} /></label>
+            <label className="field-label">Target roles<input value={profile?.target_roles || ""} onChange={setProfileField("target_roles")} /></label>
+            <label className="field-label field-full">Profile summary<textarea rows="3" value={profile?.summary || ""} onChange={setProfileField("summary")} /></label>
+            <label className="field-label field-full">Skills<input value={profile?.skills || ""} onChange={setProfileField("skills")} /></label>
+          </div>
+          <button className="button button-secondary" disabled={busy || !profile} onClick={saveProfile}>Save profile</button>
         </section>
 
         <section className="panel">
           <div className="panel-header"><div><h2 className="section-heading">Resume manager</h2><p className="panel-subtitle">PDF resume attached to approved emails</p></div><span className="panel-number">02</span></div>
           <div className="resume-card">
             <div className="pdf-icon">PDF</div>
-            <div className="resume-meta"><strong>{settings?.resume_name || "No resume uploaded"}</strong><span>{settings?.resume_name ? "Stored locally in the resumes folder" : "Upload a PDF resume to enable sending"}</span></div>
+            <div className="resume-meta"><strong>{settings?.resume_name || "No resume uploaded"}</strong><span>{settings?.resume_name ? "Stored privately in your account" : "Upload a PDF resume to enable sending"}</span></div>
             <span className={settings?.resume_name ? "status-ok" : "status-warn"}>{settings?.resume_name ? "Ready" : "Missing"}</span>
           </div>
           <label className="field-label">Upload a new resume</label>
           <div className="resume-upload">
             <input type="file" accept=".pdf,application/pdf" onChange={(e) => setResume(e.target.files?.[0] || null)} />
             <button className="button button-secondary" disabled={!resume || busy} onClick={uploadResume}>Save resume</button>
+            {settings?.resume_name && <button className="button button-ghost" disabled={busy} onClick={removeResume}>Remove</button>}
           </div>
           <div className="integration-divider" />
           <div className="panel-header" style={{ marginBottom: 8 }}><div><h2 className="section-heading">Gmail connection</h2><p className="panel-subtitle">OAuth connection for one-at-a-time sending</p></div></div>

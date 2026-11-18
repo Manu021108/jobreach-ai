@@ -1,6 +1,6 @@
 # JobReach AI
 
-A single-user, local-first job outreach CRM built with FastAPI, React, SQLite, Gmail API OAuth, and an optional AI email-personalization provider (Ollama or an OpenAI-compatible endpoint).
+A local-first, multi-user job outreach CRM built with FastAPI, React, SQLite, Gmail API OAuth, and an optional AI email-personalization provider (Ollama or an OpenAI-compatible endpoint). Each student has a private profile, resume, contacts, drafts, and Gmail connection.
 
 ## Safety model
 
@@ -18,7 +18,7 @@ This is a robust local-first starter for one operator, not a certified enterpris
 
 - Python 3.10.7+
 - Gmail account
-- Google Cloud project with Gmail API enabled and OAuth Desktop credentials
+- Google Cloud project with Gmail API enabled and OAuth Web application credentials
 - Optional: Ollama installed locally and a model pulled, e.g. `ollama pull qwen2.5:7b`
 
 ## 2. Setup
@@ -35,7 +35,7 @@ copy .env.example .env  # Windows
 # cp .env.example .env  # macOS/Linux
 ```
 
-Edit `.env` with your real profile details. Place your resume PDF in `resumes/` (the dashboard also supports uploading one). Never commit `.env`, OAuth credentials, tokens, or your resume.
+After starting the app, register and verify your account, then complete the in-app onboarding with your student profile and PDF resume. Profile details and resumes are stored per user in the application database and can be edited any time in Settings; no `.env` editing is needed. Never commit `.env` or OAuth credentials.
 
 ## 3. Gmail API OAuth setup
 
@@ -50,6 +50,10 @@ Edit `.env` with your real profile details. Place your resume PDF in `resumes/` 
 The app requests `gmail.send` and `gmail.readonly` to send mail and optionally inspect inbox messages for replies. Each user's OAuth credentials are encrypted in the application database and are never written to a shared token file. Access tokens are refreshed automatically; if Google revokes access, Settings shows **Reconnect needed**. If you change scopes, disconnect and authorize again. Google may require OAuth verification for broader/public distribution; do not distribute your client secret or encryption key.
 
 Official guide: https://developers.google.com/identity/protocols/oauth2/web-server
+
+## 3.1 Onboarding and profile
+
+On first sign-in you will be asked for your full name, target roles, summary, skills, and a PDF resume. These values feed AI drafts and job matching. The resume is stored in the database for your account only and is attached when you send an approved email. Use Settings to update any profile field, replace/remove the resume, or reconnect Gmail.
 
 ## 4. AI setup
 
@@ -102,7 +106,7 @@ A sample file is at `data/companies_template.csv`. `company_context` should cont
 
 ## 7. Recommended workflow
 
-1. Add/update sender profile and resume.
+1. Complete onboarding or update your student profile and resume in Settings.
 2. Import a small, relevant contact list.
 3. Generate drafts for selected contacts.
 4. Review/edit each draft and mark it approved.
@@ -114,7 +118,7 @@ A sample file is at `data/companies_template.csv`. `company_context` should cont
 ## 8. Data and operational notes
 
 - SQLite database: `data/jobreach.db`.
-- Back up the database regularly; it contains personal contact and outreach data.
+- Back up the database regularly; it contains per-user profiles, resumes, Gmail tokens, contacts, and outreach data.
 - Sending uses Gmail's `users.messages.send` API. Gmail API quotas and mailbox sending limits are separate; never treat a quota as a recommended outreach volume.
 - A successful API response means Gmail accepted the send request, not that the recipient's inbox received it.
 - Reply detection is best-effort and should be verified manually; email threading and aliases can complicate matching.

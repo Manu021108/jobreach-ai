@@ -1,6 +1,7 @@
 import hmac
 import io
 import re
+import tempfile
 import threading
 from urllib.parse import quote
 from contextlib import asynccontextmanager
@@ -20,7 +21,7 @@ from app.config import settings
 from app.db.models import Contact, OutreachEvent, User
 from app.db.session import SessionLocal, init_db
 from app.services import auth as auth_service
-from app.services import gmail_service, gmail_tokens
+from app.services import gmail_service, gmail_tokens, profile_service
 from app.services.ai_writer import AIWriter
 from app.services.gmail_service import GmailService
 from app.services.security import (
@@ -121,6 +122,17 @@ class ResetPasswordInput(BaseModel):
     password: str = Field(min_length=8, max_length=128)
 
 
+class ProfileInput(BaseModel):
+    full_name: str = Field(max_length=200)
+    phone: str = Field(default="", max_length=50)
+    location: str = Field(default="", max_length=200)
+    linkedin: str = Field(default="", max_length=500)
+    github: str = Field(default="", max_length=500)
+    summary: str = Field(default="", max_length=20_000)
+    skills: str = Field(default="", max_length=5_000)
+    target_roles: str = Field(default="", max_length=500)
+
+
 def _iso(value):
     return value.isoformat() if value else None
 
@@ -131,6 +143,7 @@ def _user_dict(user):
         "name": user.name,
         "email": user.email,
         "is_verified": user.is_verified,
+        "onboarding_completed": bool(user.onboarding_completed),
         "last_login_at": _iso(user.last_login_at),
         "created_at": _iso(user.created_at),
     }
@@ -229,9 +242,33 @@ def _followup_dict(event):
     }
 
 
-def _resume_path():
-    candidates = sorted(settings.path("resumes").glob("*.pdf"))
-    return candidates[0] if candidates else None
+def _user_resume(user):
+    return profile_service.get_resume(user.id)
+
+
+def _resume_filename(user):
+    resume = _user_resume(user)
+    return resume.filename if resume else "resume.pdf"
+
+
+def _send_resume_path(user):
+    resume = _user_resume(user)
+    if not resume:
+        return None
+    suffix = Path(resume.filename).suffix.lower()
+    suffix = suffix if suffix == ".pdf" else ".pdf"
+    temp = tempfile.NamedTemporaryFile(prefix="jobreach-resume-", suffix=suffix, delete=False)
+    with temp:
+        temp.write(resume.content)
+    return Path(temp.name)
+
+
+def _sync_onboarding(user_id):
+    status = profile_service.onboarding_status(user_id)
+    if status["profile_complete"] and status["resume_uploaded"] and not status["completed"]:
+        profile_service.complete_onboarding(user_id)
+        status = profile_service.onboarding_status(user_id)
+    return status
 
 
 def _latest_send_at(owner_id=None):
@@ -505,7 +542,7 @@ def score_job(job_id: int, user: User = Depends(get_current_user)):
     job = get_job(job_id, user.id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
-    result = match_job(job)
+    result = match_job(job, profile_service.ai_profile(user.id))
     update_job_match(job_id, result["score"], "; ".join(result["reasons"]), user.id)
     return {"job": _job_dict(get_job(job_id, user.id)), **result}
 
@@ -521,12 +558,12 @@ def generate_job_draft(job_id: int, user: User = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Contact not found.")
     if contact.opted_out or contact.status in {"SENT", "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED"}:
         raise HTTPException(status_code=409, detail="This contact is not eligible for a new draft.")
-    match = match_job(job)
+    profile = profile_service.ai_profile(user.id)
+    match = match_job(job, profile)
     if job.match_score is not None:
         match["score"] = job.match_score
-    resume = _resume_path()
     try:
-        generated = AIWriter().generate_for_job(contact, job, match, resume.name if resume else "resume.pdf")
+        generated = AIWriter(profile).generate_for_job(contact, job, match, _resume_filename(user))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI generation failed: {exc}") from exc
     draft_id = save_draft(contact.id, generated["subject"], generated["body"], job.id, user.id)
@@ -553,8 +590,9 @@ def generate_draft(contact_id: int, payload: CompanyContextUpdate, user: User = 
         contact.company_context = payload.company_context
         db.commit()
         try:
-            resume = _resume_path()
-            generated = AIWriter().generate(contact, resume.name if resume else "resume.pdf")
+            generated = AIWriter(profile_service.ai_profile(user.id)).generate(
+                contact, _resume_filename(user)
+            )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"AI generation failed: {exc}") from exc
     return generated
@@ -605,7 +643,7 @@ def preview_draft(draft_id: int, user: User = Depends(get_current_user)):
         "company": draft.contact.company_name,
         "subject": draft.subject,
         "body": draft.body,
-        "resume": _resume_path().name if _resume_path() else None,
+        "resume": _resume_filename(user) if _user_resume(user) else None,
         "job": job,
     }
 
@@ -622,12 +660,16 @@ def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depen
         )
         if reason:
             raise HTTPException(status_code=409, detail=reason)
-        resume = _resume_path()
+        resume = _send_resume_path(user)
         if not resume:
-            raise HTTPException(status_code=409, detail="Upload a PDF resume in Settings before sending.")
+            raise HTTPException(status_code=409, detail="Upload a PDF resume during onboarding or in Settings before sending.")
         try:
             response = GmailService(user.id).connect().send(
-                draft.contact.email, draft.subject, draft.body, resume,
+                draft.contact.email,
+                draft.subject,
+                draft.body,
+                resume,
+                sender_name=profile_service.profile_dict(user.id)["full_name"],
             )
             mark_sent(draft.id, response.get("id", ""), response.get("threadId", ""), owner_id=user.id)
             _sent_this_run += 1
@@ -637,6 +679,8 @@ def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depen
                 status_code=502,
                 detail=f"Send failed or returned an uncertain result: {exc}. Check Gmail Sent before retrying.",
             ) from exc
+        finally:
+            resume.unlink(missing_ok=True)
     return {"ok": True, "message": "Gmail accepted the message send request."}
 
 
@@ -663,33 +707,36 @@ def sync_replies(user: User = Depends(get_current_user)):
     return {"updated": count}
 
 
-@app.get("/api/settings")
-def get_settings(user: User = Depends(get_current_user)):
-    resume = _resume_path()
+@app.get("/api/profile")
+def get_profile(user: User = Depends(get_current_user)):
+    data = profile_service.profile_dict(user.id)
     gmail_status = gmail_tokens.connection_status(user.id)
+    data["sender_email"] = gmail_status["email"] or data["email"]
+    data["onboarding"] = profile_service.onboarding_status(user.id)
+    return data
+
+
+@app.put("/api/profile")
+def update_profile(payload: ProfileInput, user: User = Depends(get_current_user)):
+    profile_service.save_profile(user.id, payload.model_dump())
+    refreshed = auth_service.get_user(user.id)
     return {
-        "app_name": settings.app_name,
-        "sender_name": settings.sender_name,
-        "sender_email": settings.sender_email,
-        "profile_summary": settings.profile_summary,
-        "skills": settings.skills,
-        "ai_provider": settings.ai_provider,
-        "ai_model": settings.ai_model,
-        "ai_base_url": settings.ai_base_url,
-        "dry_run": settings.dry_run,
-        "max_emails_per_run": settings.max_emails_per_run,
-        "max_emails_per_day": settings.max_emails_per_day,
-        "min_seconds_between_emails": settings.min_seconds_between_emails,
-        "resume_name": resume.name if resume else None,
-        "gmail_connected": gmail_status["connected"],
-        "gmail_email": gmail_status["email"],
-        "gmail_expires_at": gmail_status["expires_at"],
-        "gmail_needs_reconnect": gmail_status["needs_reconnect"],
+        **profile_service.profile_dict(user.id),
+        "user": _user_dict(refreshed),
+        "onboarding": _sync_onboarding(user.id),
     }
 
 
-@app.post("/api/settings/resume")
-async def upload_resume(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+@app.post("/api/onboarding/complete")
+def complete_onboarding(user: User = Depends(get_current_user)):
+    try:
+        updated = profile_service.complete_onboarding(user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"user": _user_dict(updated), "onboarding": profile_service.onboarding_status(user.id)}
+
+
+async def _store_resume(file, user):
     filename = Path(file.filename or "").name
     if Path(filename).suffix.lower() != ".pdf":
         raise HTTPException(status_code=400, detail="Upload a PDF resume.")
@@ -701,11 +748,55 @@ async def upload_resume(file: UploadFile = File(...), user: User = Depends(get_c
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
     if not safe_name:
         raise HTTPException(status_code=400, detail="Choose a valid resume filename.")
-    resume_dir = settings.path("resumes")
-    resume_dir.mkdir(parents=True, exist_ok=True)
-    destination = resume_dir / safe_name
-    destination.write_bytes(content)
-    return {"resume_name": destination.name}
+    resume = profile_service.save_resume(user.id, safe_name, content)
+    return {"resume_name": resume.filename, "onboarding": _sync_onboarding(user.id)}
+
+
+@app.post("/api/profile/resume")
+async def upload_profile_resume(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+    return await _store_resume(file, user)
+
+
+@app.delete("/api/profile/resume")
+def delete_profile_resume(user: User = Depends(get_current_user)):
+    profile_service.delete_resume(user.id)
+    return {"resume_name": None, "onboarding": profile_service.onboarding_status(user.id)}
+
+
+@app.post("/api/settings/resume")
+async def upload_settings_resume(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+    return await _store_resume(file, user)
+
+
+@app.get("/api/settings")
+def get_settings(user: User = Depends(get_current_user)):
+    profile = profile_service.profile_dict(user.id)
+    gmail_status = gmail_tokens.connection_status(user.id)
+    return {
+        "app_name": settings.app_name,
+        "sender_name": profile["full_name"],
+        "sender_email": gmail_status["email"] or profile["email"],
+        "profile_summary": profile["summary"],
+        "skills": profile["skills"],
+        "target_roles": profile["target_roles"],
+        "phone": profile["phone"],
+        "location": profile["location"],
+        "linkedin": profile["linkedin"],
+        "github": profile["github"],
+        "ai_provider": settings.ai_provider,
+        "ai_model": settings.ai_model,
+        "ai_base_url": settings.ai_base_url,
+        "dry_run": settings.dry_run,
+        "max_emails_per_run": settings.max_emails_per_run,
+        "max_emails_per_day": settings.max_emails_per_day,
+        "min_seconds_between_emails": settings.min_seconds_between_emails,
+        "resume_name": profile["resume_name"],
+        "onboarding": profile_service.onboarding_status(user.id),
+        "gmail_connected": gmail_status["connected"],
+        "gmail_email": gmail_status["email"],
+        "gmail_expires_at": gmail_status["expires_at"],
+        "gmail_needs_reconnect": gmail_status["needs_reconnect"],
+    }
 
 
 @app.post("/api/settings/gmail")
@@ -716,7 +807,7 @@ def connect_gmail(user: User = Depends(get_current_user)):
 @app.post("/api/settings/test-ai")
 def test_ai(user: User = Depends(get_current_user)):
     try:
-        result = AIWriter().client.chat.completions.create(
+        result = AIWriter(profile_service.ai_profile(user.id)).client.chat.completions.create(
             model=settings.ai_model,
             messages=[{"role": "user", "content": "Reply with the word READY."}],
             max_tokens=10,
