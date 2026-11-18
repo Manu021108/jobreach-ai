@@ -27,6 +27,7 @@ def client_factory(monkeypatch, tmp_path):
         monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr(main, "init_db", lambda: None)
     monkeypatch.setattr(hr_database, "total_count", lambda: 0)
+    monkeypatch.setattr(hr_database, "verified_count", lambda: 0)
     return lambda: TestClient(main.app)
 
 

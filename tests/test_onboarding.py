@@ -29,6 +29,7 @@ def client_factory(monkeypatch):
         monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr(main, "init_db", lambda: None)
     monkeypatch.setattr(hr_database, "total_count", lambda: 0)
+    monkeypatch.setattr(hr_database, "verified_count", lambda: 0)
     monkeypatch.setattr(profile_service, "claim_legacy_resume", lambda user_id: None)
     return lambda: TestClient(main.app)
 

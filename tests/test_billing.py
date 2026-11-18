@@ -23,14 +23,37 @@ DATABASE_ROWS = [
         "email": "hr@acme.example",
         "hr_name": "Asha",
         "role": "Talent Lead",
+        "verified": True,
     },
     {
         "company_name": "Globex",
         "email": "people@globex.example",
         "hr_name": "Ravi",
         "role": "Recruiter",
+        "verified": True,
     },
 ]
+
+
+def _query_records(query="", company="", role="", verified=None, limit=50, offset=0):
+    items = DATABASE_ROWS
+    needle = str(query or "").strip().lower()
+    if needle:
+        items = [item for item in items if needle in f"{item['company_name']} {item['email']} {item['role']}".lower()]
+    if company:
+        items = [item for item in items if company.lower() in item["company_name"].lower()]
+    if role:
+        items = [item for item in items if role.lower() in item["role"].lower()]
+    if verified is not None:
+        items = [item for item in items if item["verified"] is verified]
+    start = max(0, offset)
+    return {
+        "rows": items[start:start + limit],
+        "total": len(DATABASE_ROWS),
+        "filtered_total": len(items),
+        "verified_total": len(DATABASE_ROWS),
+        "page_count": ((len(items) + limit - 1) // limit) if limit and items else 0,
+    }
 
 
 class FakeStripe:
@@ -71,9 +94,13 @@ def client_factory(monkeypatch, tmp_path):
         monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr(main, "init_db", lambda: None)
     monkeypatch.setattr(hr_database, "total_count", lambda: len(DATABASE_ROWS))
-    monkeypatch.setattr(hr_database, "preview", lambda limit=3: [{"company_name": item["company_name"]} for item in DATABASE_ROWS[:limit]])
-    monkeypatch.setattr(hr_database, "search", lambda query="", limit=50, offset=0: DATABASE_ROWS[offset:offset + limit])
-    monkeypatch.setattr(hr_database, "import_records", lambda limit=None: DATABASE_ROWS[:limit] if limit else DATABASE_ROWS)
+    monkeypatch.setattr(hr_database, "verified_count", lambda: len(DATABASE_ROWS))
+    monkeypatch.setattr(hr_database, "preview", lambda limit=3: [
+        {"company_name": item["company_name"], "role": item["role"], "verified": item["verified"]}
+        for item in DATABASE_ROWS[:limit]
+    ])
+    monkeypatch.setattr(hr_database, "query_records", _query_records)
+    monkeypatch.setattr(hr_database, "import_records", lambda limit=None, **kwargs: DATABASE_ROWS[:limit] if limit else DATABASE_ROWS)
     monkeypatch.setattr(settings, "stripe_secret_key", "sk_test")
     monkeypatch.setattr(settings, "stripe_webhook_secret", "whsec_test")
     monkeypatch.setattr(settings, "stripe_price_id", "")
@@ -119,12 +146,18 @@ def test_checkout_webhook_and_entitlement_gate_database(client_factory, monkeypa
     settings_response = client.get("/api/settings").json()
     assert settings_response["hr_database_unlocked"] is False
     assert settings_response["hr_database_count"] == 2
+    assert settings_response["hr_database_verified_count"] == 2
 
     locked = client.get("/api/hr-database").json()
     assert locked["unlocked"] is False
     assert locked["total"] == 2
-    assert locked["preview"] == [{"company_name": "Acme Corp"}, {"company_name": "Globex"}]
-    assert "rows" not in locked
+    assert locked["filtered_total"] == 0
+    assert locked["verified_total"] == 2
+    assert locked["rows"] == []
+    assert locked["preview"] == [
+        {"company_name": "Acme Corp", "role": "Talent Lead", "verified": True},
+        {"company_name": "Globex", "role": "Recruiter", "verified": True},
+    ]
     assert client.post("/api/hr-database/import", json={"limit": 10}).status_code == 402
 
     checkout = client.post("/api/billing/checkout")
@@ -152,9 +185,20 @@ def test_checkout_webhook_and_entitlement_gate_database(client_factory, monkeypa
     unlocked = client.get("/api/hr-database").json()
     assert unlocked["unlocked"] is True
     assert unlocked["rows"] == DATABASE_ROWS
+    assert unlocked["filtered_total"] == 2
+    assert unlocked["verified_total"] == 2
+    assert unlocked["page_count"] == 1
+
+    second_page = client.get("/api/hr-database?page=2&page_size=1").json()
+    assert second_page["rows"] == [DATABASE_ROWS[1]]
+    assert second_page["page_count"] == 2
+
+    filtered = client.get("/api/hr-database?company=globex").json()
+    assert filtered["filtered_total"] == 1
+    assert filtered["rows"] == [DATABASE_ROWS[1]]
     assert client.post("/api/billing/checkout").status_code == 409
 
-    imported = client.post("/api/hr-database/import", json={"limit": 10})
+    imported = client.post("/api/hr-database/import", json={"company": "globex", "limit": 10})
     assert imported.status_code == 200
     assert imported.json()["added"] == 2
     assert len(client.get("/api/contacts").json()) == 2

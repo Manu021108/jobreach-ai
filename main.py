@@ -135,6 +135,10 @@ class ProfileInput(BaseModel):
 
 
 class HRImportInput(BaseModel):
+    query: str = Field(default="", max_length=200)
+    company: str = Field(default="", max_length=200)
+    role: str = Field(default="", max_length=200)
+    verified: bool | None = None
     limit: int = Field(default=100, ge=1, le=5000)
 
 
@@ -752,25 +756,49 @@ def billing_entitlement(user: User = Depends(get_current_user)):
 @app.get("/api/hr-database")
 def hr_database_rows(
     query: str = "",
-    limit: int = 50,
-    offset: int = 0,
+    company: str = "",
+    role: str = "",
+    verified: bool | None = None,
+    page: int = 1,
+    page_size: int = 25,
     user: User = Depends(get_current_user),
 ):
     unlocked = billing_service.has_entitlement(user.id)
-    total = hr_database.total_count()
-    result = {
-        "total": total,
-        "unlocked": unlocked,
-        "preview": [] if unlocked else hr_database.preview(),
-    }
-    if unlocked:
-        result["rows"] = hr_database.search(query, max(1, min(limit, 200)), max(0, offset))
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    if not unlocked:
+        return {
+            "total": hr_database.total_count(),
+            "filtered_total": 0,
+            "verified_total": hr_database.verified_count(),
+            "page": page,
+            "page_size": page_size,
+            "page_count": 0,
+            "rows": [],
+            "unlocked": False,
+            "preview": hr_database.preview(),
+        }
+    result = hr_database.query_records(
+        query=query,
+        company=company,
+        role=role,
+        verified=verified,
+        limit=page_size,
+        offset=(page - 1) * page_size,
+    )
+    result.update({"unlocked": True, "preview": [], "page": page, "page_size": page_size})
     return result
 
 
 @app.post("/api/hr-database/import")
 def import_hr_database(payload: HRImportInput, user: User = Depends(require_hr_database_unlock)):
-    records = hr_database.import_records(payload.limit)
+    records = hr_database.import_records(
+        limit=payload.limit,
+        query=payload.query,
+        company=payload.company,
+        role=payload.role,
+        verified=payload.verified,
+    )
     added, skipped, errors = add_contacts(records, user.id)
     return {"added": added, "skipped": skipped, "errors": errors[:10]}
 
@@ -862,6 +890,7 @@ def get_settings(user: User = Depends(get_current_user)):
         "onboarding": profile_service.onboarding_status(user.id),
         "hr_database_unlocked": billing_service.has_entitlement(user.id),
         "hr_database_count": hr_database.total_count(),
+        "hr_database_verified_count": hr_database.verified_count(),
         "unlock_amount": settings.stripe_unlock_amount,
         "unlock_currency": settings.stripe_unlock_currency.upper(),
         "gmail_connected": gmail_status["connected"],

@@ -554,28 +554,60 @@ function ContactTable({ contacts, compact = false }) {
 }
 
 function UnlockPage({ database, billing, settings, busy, run }) {
-  const [query, setQuery] = useState("");
-  const [rows, setRows] = useState(database?.rows || []);
-  useEffect(() => { setRows(database?.rows || []); }, [database]);
-  const unlocked = Boolean(database?.unlocked || settings?.hr_database_unlocked || billing?.unlocked);
-  const total = database?.total ?? settings?.hr_database_count ?? 0;
+  const [filters, setFilters] = useState({ query: "", company: "", role: "", verified: "all" });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [result, setResult] = useState(database);
+  useEffect(() => { setResult(database); setPage(1); }, [database]);
+  const unlocked = Boolean(result?.unlocked || settings?.hr_database_unlocked || billing?.unlocked);
+  const total = result?.total ?? database?.total ?? settings?.hr_database_count ?? 0;
+  const verifiedTotal = result?.verified_total ?? settings?.hr_database_verified_count ?? total;
+  const filteredTotal = result?.filtered_total ?? 0;
+  const pageCount = result?.page_count ?? 0;
+  const rows = result?.rows || [];
   const amount = billing?.amount_total ?? settings?.unlock_amount ?? 0;
   const currency = billing?.currency || settings?.unlock_currency || "INR";
   const price = `${currency} ${(amount / 100).toFixed(amount % 100 ? 2 : 0)}`;
 
-  const checkout = async () => {
-    const result = await run(() => api("/billing/checkout", { method: "POST" }), "Opening Stripe checkout…", false);
-    if (result?.url) window.location.assign(result.url);
+  const buildParams = (nextPage, nextFilters, nextSize) => {
+    const params = new URLSearchParams({ page: String(nextPage), page_size: String(nextSize) });
+    if (nextFilters.query.trim()) params.set("query", nextFilters.query.trim());
+    if (nextFilters.company.trim()) params.set("company", nextFilters.company.trim());
+    if (nextFilters.role.trim()) params.set("role", nextFilters.role.trim());
+    if (nextFilters.verified !== "all") params.set("verified", nextFilters.verified === "verified" ? "true" : "false");
+    return params.toString();
   };
-  const search = async () => {
-    const result = await run(() => api(`/hr-database?query=${encodeURIComponent(query)}`), null, false);
-    if (result) setRows(result.rows || []);
+  const load = async (nextPage, nextFilters, nextSize) => {
+    const response = await api(`/hr-database?${buildParams(nextPage, nextFilters, nextSize)}`);
+    setResult(response);
+    setPage(nextPage);
+    return response;
+  };
+  const updateFilter = (key, value) => setFilters((current) => ({ ...current, [key]: value }));
+  const applyFilters = () => run(() => load(1, filters, pageSize), null, false);
+  const resetFilters = () => {
+    const cleared = { query: "", company: "", role: "", verified: "all" };
+    setFilters(cleared);
+    run(() => load(1, cleared, pageSize), null, false);
+  };
+  const changePageSize = (value) => {
+    const size = Number(value);
+    setPageSize(size);
+    run(() => load(1, filters, size), null, false);
+  };
+  const checkout = async () => {
+    const response = await run(() => api("/billing/checkout", { method: "POST" }), "Opening Stripe checkout…", false);
+    if (response?.url) window.location.assign(response.url);
   };
   const importContacts = (limit) => run(
     () => api("/hr-database/import", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: filters.query.trim(), company: filters.company.trim(), role: filters.role.trim(),
+        verified: filters.verified === "all" ? null : filters.verified === "verified", limit,
+      }),
     }),
-    (result) => `Imported ${result.added} contacts; skipped ${result.skipped}.`,
+    (response) => `Imported ${response.added} contacts; skipped ${response.skipped}.`,
   );
 
   return (
@@ -584,14 +616,14 @@ function UnlockPage({ database, billing, settings, busy, run }) {
       <div className="settings-grid">
         <section className="panel">
           <div className="panel-header"><div><h2 className="section-heading">Bundled contact database</h2><p className="panel-subtitle">Lifetime access after a single Stripe payment</p></div><span className="panel-number">01</span></div>
-
           <div className="metric-grid">
             <div className="metric-card"><span>Total contacts</span><strong>{total.toLocaleString()}</strong></div>
+            <div className="metric-card"><span>Verified</span><strong>{verifiedTotal.toLocaleString()}</strong></div>
             <div className="metric-card"><span>Your access</span><strong>{unlocked ? "Unlocked" : "Locked"}</strong></div>
           </div>
           {!unlocked && (
             <>
-              <div className="field-note"><strong>Available companies:</strong> {(database?.preview || []).map((item) => item.company_name).join(" · ") || "Loading preview…"}</div>
+              <div className="locked-banner"><Icon name="shield" /><span>Preview only. Search, filters, emails, and pagination unlock after payment.</span></div>
               <button className="button button-primary full-button" style={{ marginTop: 10 }} disabled={busy} onClick={checkout}>Unlock for {price}</button>
             </>
           )}
@@ -607,31 +639,65 @@ function UnlockPage({ database, billing, settings, busy, run }) {
           {billing?.order?.status && <div className="field-note"><strong>Latest payment:</strong> {billing.order.status}</div>}
         </section>
         <section className="panel">
-          <div className="panel-header"><div><h2 className="section-heading">Search database</h2><p className="panel-subtitle">{unlocked ? "Find companies and contacts by name, email, or role" : "Full search and emails unlock after payment"}</p></div><span className="panel-number">02</span></div>
+          <div className="panel-header"><div><h2 className="section-heading">Search database</h2><p className="panel-subtitle">{unlocked ? "Filter by company, role, and verification status" : "Full search and emails unlock after payment"}</p></div><span className="panel-number">02</span></div>
           {unlocked ? (
             <>
-              <div className="resume-upload">
-                <input type="text" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Company, email, or role" />
-                <button className="button button-secondary" disabled={busy} onClick={search}>Search</button>
+              <div className="database-filters">
+                <div><label className="field-label">Search all fields</label><input type="text" value={filters.query} onChange={(event) => updateFilter("query", event.target.value)} placeholder="Company, email, contact, or role" /></div>
+                <div><label className="field-label">Company</label><input type="text" value={filters.company} onChange={(event) => updateFilter("company", event.target.value)} placeholder="Company name" /></div>
+                <div><label className="field-label">Role</label><input type="text" value={filters.role} onChange={(event) => updateFilter("role", event.target.value)} placeholder="Designation" /></div>
+                <div><label className="field-label">Verification</label><select value={filters.verified} onChange={(event) => updateFilter("verified", event.target.value)}><option value="all">All contacts</option><option value="verified">Verified only</option><option value="unverified">Unverified only</option></select></div>
+              </div>
+              <div className="button-row" style={{ marginTop: 8 }}>
+                <button className="button button-secondary" disabled={busy} onClick={resetFilters}>Reset</button>
+                <button className="button button-primary" disabled={busy} onClick={applyFilters}>Apply filters</button>
               </div>
               <div className="table-wrap" style={{ marginTop: 10 }}>
                 <table>
-                  <thead><tr><th>Company</th><th>Contact</th><th>Role</th></tr></thead>
+                  <thead><tr><th>Company</th><th>Contact</th><th>Role</th><th>Status</th></tr></thead>
                   <tbody>
                     {rows.map((item, index) => (
                       <tr key={`${item.email}-${index}`}>
                         <td><div className="table-primary">{item.company_name}</div></td>
                         <td>{item.email}</td>
                         <td>{item.role || "—"}</td>
+                        <td><Badge>{item.verified ? "Verified" : "Unverified"}</Badge></td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              {rows.length === 0 && <div className="table-empty">No contacts match that search.</div>}
+              {rows.length === 0 && <div className="table-empty">No contacts match these filters.</div>}
+              <div className="pagination-row">
+                <span>Showing {filteredTotal ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filteredTotal)} of {filteredTotal.toLocaleString()} filtered ({total.toLocaleString()} total)</span>
+                <div className="pagination-controls">
+                  <select className="page-size-select" value={pageSize} onChange={(event) => changePageSize(event.target.value)}>
+                    {[25, 50, 100].map((size) => <option key={size} value={size}>{size} / page</option>)}
+                  </select>
+                  <button className="button button-secondary" disabled={busy || page <= 1} onClick={() => run(() => load(page - 1, filters, pageSize), null, false)}>Previous</button>
+                  <span>Page {page} / {Math.max(1, pageCount)}</span>
+                  <button className="button button-secondary" disabled={busy || page >= pageCount} onClick={() => run(() => load(page + 1, filters, pageSize), null, false)}>Next</button>
+                </div>
+              </div>
             </>
           ) : (
-            <div className="empty-state"><div className="empty-icon"><Icon name="shield" /></div><strong>Database locked</strong><p>Company names are shown as a preview. Emails and full search require the one-time unlock.</p></div>
+            <>
+              <div className="locked-banner"><Icon name="shield" /><span>Database locked — preview only. Complete payment to view emails, filters, and paginated results.</span></div>
+              <div className="table-wrap" style={{ marginTop: 10 }}>
+                <table>
+                  <thead><tr><th>Company</th><th>Role</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {(result?.preview || []).map((item, index) => (
+                      <tr key={`${item.company_name}-${index}`}>
+                        <td><div className="table-primary">{item.company_name}</div></td>
+                        <td>{item.role || "—"}</td>
+                        <td><Badge>{item.verified ? "Verified" : "Unverified"}</Badge></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </section>
       </div>

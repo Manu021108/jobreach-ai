@@ -57,7 +57,7 @@ On first sign-in you will be asked for your full name, target roles, summary, sk
 
 ## 3.2 One-time HR database unlock
 
-The **Unlock** page sells one-time access to the bundled HR contact database through Stripe Checkout. Accounts are gated by a per-user entitlement stored in SQLite; unlocked accounts can search the database and import contacts, while locked accounts only see a company-name preview. Set `HR_DATABASE_FILE` to the full dataset you intend to sell.
+The **Unlock** page sells one-time access to the bundled HR contact database through Stripe Checkout. Accounts are gated by a per-user entitlement stored in SQLite. Locked accounts see a clearly marked preview with company names, roles, and verification badges only; unlocked accounts get full-text search, company/role/verification filters, paginated results, and filtered imports. Set `HR_DATABASE_FILE` to the dataset you intend to sell.
 
 Set these values in `.env`:
 

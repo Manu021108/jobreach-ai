@@ -1,4 +1,5 @@
 from functools import lru_cache
+from math import ceil
 from pathlib import Path
 
 import pandas as pd
@@ -32,6 +33,10 @@ def _pick(row, *keys):
     return ""
 
 
+def _contains(item, needle, fields):
+    return any(needle in str(item.get(field, "")).lower() for field in fields)
+
+
 @lru_cache(maxsize=8)
 def _load(path_name, modified, size):
     path = Path(path_name)
@@ -58,6 +63,10 @@ def _load(path_name, modified, size):
             "email": email[:320],
             "hr_name": _pick(row, "hr_name", "hr name", "person name", "name")[:200] or "Hiring Team",
             "role": _pick(row, "role", "designation", "title")[:200] or "Relevant Opportunities",
+            "location": _pick(row, "location", "city", "country")[:200],
+            "industry": _pick(row, "industry", "sector")[:200],
+            "source": _pick(row, "source", "source_url", "website")[:320],
+            "verified": True,
         })
     return tuple(records)
 
@@ -72,21 +81,57 @@ def total_count():
     return len(rows())
 
 
+def verified_count():
+    return sum(1 for item in rows() if item["verified"])
+
+
 def preview(limit=3):
-    return [{"company_name": item["company_name"]} for item in rows()[:limit]]
+    return [
+        {
+            "company_name": item["company_name"],
+            "role": item["role"],
+            "verified": item["verified"],
+        }
+        for item in rows()[:limit]
+    ]
+
+
+def query_records(query="", company="", role="", verified=None, limit=50, offset=0):
+    items = rows()
+    needle = str(query or "").strip().lower()
+    company_filter = str(company or "").strip().lower()
+    role_filter = str(role or "").strip().lower()
+    if needle:
+        items = [item for item in items if _contains(item, needle, ("company_name", "email", "hr_name", "role", "location", "industry"))]
+    if company_filter:
+        items = [item for item in items if company_filter in item["company_name"].lower()]
+    if role_filter:
+        items = [item for item in items if role_filter in item["role"].lower()]
+    if verified is not None:
+        wanted = verified if isinstance(verified, bool) else str(verified).strip().lower() in {"1", "true", "yes", "verified"}
+        items = [item for item in items if item["verified"] is wanted]
+    total = len(items)
+    start = max(0, int(offset or 0))
+    size = max(0, int(limit or 0))
+    return {
+        "rows": items[start:start + size] if size else items[start:],
+        "total": len(rows()),
+        "filtered_total": total,
+        "verified_total": verified_count(),
+        "page_count": ceil(total / size) if size else (1 if total else 0),
+    }
 
 
 def search(query="", limit=50, offset=0):
-    needle = str(query or "").strip().lower()
-    items = rows()
-    if needle:
-        items = [
-            item for item in items
-            if any(needle in str(item.get(field, "")).lower() for field in ("company_name", "email", "hr_name", "role"))
-        ]
-    return items[offset:offset + limit]
+    return query_records(query=query, limit=limit, offset=offset)["rows"]
 
 
-def import_records(limit=None):
-    items = rows()
-    return items if limit is None else items[:limit]
+def import_records(limit=None, query="", company="", role="", verified=None):
+    return query_records(
+        query=query,
+        company=company,
+        role=role,
+        verified=verified,
+        limit=limit,
+        offset=0,
+    )["rows"]
