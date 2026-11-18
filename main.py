@@ -28,6 +28,7 @@ from app.services.outreach import (
     approve_draft,
     complete_followup,
     dashboard_stats,
+    get_contact,
     get_contacts,
     get_drafts,
     get_followups,
@@ -198,6 +199,13 @@ def _draft_dict(draft):
         "job": _job_dict(get_job(job_id, draft.owner_id)) if job_id else None,
         "contact": _contact_dict(draft.contact),
     }
+
+
+def _get_owned_draft(draft_id, owner_id):
+    draft = next((item for item in get_drafts(owner_id=owner_id) if item.id == int(draft_id)), None)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found.")
+    return draft
 
 
 def _followup_dict(event):
@@ -426,6 +434,8 @@ def discover_contact_jobs(contact_id: int, user: User = Depends(get_current_user
 
 @app.get("/api/contacts/{contact_id}/jobs")
 def list_contact_jobs(contact_id: int, user: User = Depends(get_current_user)):
+    if not get_contact(contact_id, user.id):
+        raise HTTPException(status_code=404, detail="Contact not found.")
     return [_job_dict(item) for item in get_jobs(contact_id, user.id)]
 
 
@@ -505,6 +515,7 @@ def drafts(user: User = Depends(get_current_user)):
 
 @app.put("/api/drafts/{draft_id}")
 def edit_draft(draft_id: int, payload: DraftInput, user: User = Depends(get_current_user)):
+    _get_owned_draft(draft_id, user.id)
     try:
         update_draft(draft_id, payload.subject, payload.body, user.id)
     except ValueError as exc:
@@ -514,6 +525,7 @@ def edit_draft(draft_id: int, payload: DraftInput, user: User = Depends(get_curr
 
 @app.post("/api/drafts/{draft_id}/approve")
 def approve_email_draft(draft_id: int, user: User = Depends(get_current_user)):
+    _get_owned_draft(draft_id, user.id)
     try:
         approve_draft(draft_id, user.id)
     except ValueError as exc:
@@ -523,9 +535,7 @@ def approve_email_draft(draft_id: int, user: User = Depends(get_current_user)):
 
 @app.get("/api/drafts/{draft_id}/preview")
 def preview_draft(draft_id: int, user: User = Depends(get_current_user)):
-    draft = next((item for item in get_drafts(owner_id=user.id) if item.id == draft_id), None)
-    if not draft:
-        raise HTTPException(status_code=404, detail="Draft not found.")
+    draft = _get_owned_draft(draft_id, user.id)
     if draft.status != "APPROVED":
         raise HTTPException(status_code=409, detail="Approve this draft before previewing a send.")
     job = _job_dict(get_job(draft.job_id, user.id)) if getattr(draft, "job_id", None) else None
@@ -543,9 +553,7 @@ def preview_draft(draft_id: int, user: User = Depends(get_current_user)):
 def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depends(get_current_user)):
     global _sent_this_run
     with _send_lock:
-        draft = next((item for item in get_drafts(owner_id=user.id) if item.id == draft_id), None)
-        if not draft:
-            raise HTTPException(status_code=404, detail="Draft not found.")
+        draft = _get_owned_draft(draft_id, user.id)
         now = datetime.now(timezone.utc)
         reason = _send_block_reason(
             draft, confirmation, sent_today_count(user.id), _sent_this_run,

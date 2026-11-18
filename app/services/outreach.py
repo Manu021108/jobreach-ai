@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from email_validator import validate_email, EmailNotValidError
 from app.config import settings
@@ -11,6 +12,21 @@ from app.utils import website_from_email
 
 def _owned(model, owner_id):
     return model.owner_id == int(owner_id) if owner_id is not None else True
+
+
+def _owned_contact(model, owner_id):
+    if owner_id is None:
+        return True
+    return model.contact.has(Contact.owner_id == int(owner_id))
+
+
+def _job_owned(job, owner_id):
+    if owner_id is None:
+        return True
+    contact = job.contact
+    return bool(
+        job.owner_id == int(owner_id) and contact and contact.owner_id == int(owner_id)
+    )
 
 
 def add_contacts(records, owner_id=None):
@@ -47,7 +63,14 @@ def add_contacts(records, owner_id=None):
                 website=website_from_email(email, item.get("website")),
                 owner_id=int(owner_id) if owner_id is not None else None,
             )
-            db.add(contact)
+            try:
+                with db.begin_nested():
+                    db.add(contact)
+                    db.flush()
+            except IntegrityError:
+                skipped += 1
+                errors.append(f"Row {idx}: contact already exists")
+                continue
             existing_pairs.add(pair)
             added += 1
         db.commit()
@@ -75,6 +98,10 @@ def save_draft(contact_id, subject, body, job_id=None, owner_id=None):
         contact = db.get(Contact, int(contact_id))
         if not contact or (owner_id is not None and contact.owner_id != int(owner_id)):
             raise ValueError("Contact not found")
+        if job_id is not None:
+            job = db.get(JobPosting, int(job_id))
+            if not job or job.contact_id != contact.id or not _job_owned(job, owner_id):
+                raise ValueError("Job not found")
         draft = EmailDraft(
             contact_id=contact.id, subject=subject.strip(), body=body.strip(),
             status="DRAFT", job_id=job_id,
@@ -106,6 +133,7 @@ def get_drafts(status=None, owner_id=None):
             select(EmailDraft)
             .options(joinedload(EmailDraft.contact))
             .where(_owned(EmailDraft, owner_id))
+            .where(_owned_contact(EmailDraft, owner_id))
             .order_by(EmailDraft.created_at.desc())
         )
         if status:
@@ -145,7 +173,7 @@ def mark_sent(draft_id, message_id, thread_id, followup_days=None, owner_id=None
             contact_id=contact.id, draft_id=draft.id, event_type="SENT",
             message_id=message_id or "", thread_id=thread_id or "",
             details="Gmail API accepted send request", occurred_at=now, followup_due_at=due,
-            owner_id=int(owner_id) if owner_id is not None else draft.owner_id,
+            owner_id=int(owner_id) if owner_id is not None else (draft.owner_id or contact.owner_id),
         )
         db.add(event)
         draft.status = "SENT"
@@ -159,7 +187,7 @@ def record_failed(draft_id, error, owner_id=None):
         if draft and (owner_id is None or draft.owner_id == int(owner_id)):
             db.add(OutreachEvent(
                 contact_id=draft.contact_id, draft_id=draft.id, event_type="FAILED",
-                details=str(error)[:2000], owner_id=draft.owner_id,
+                details=str(error)[:2000], owner_id=draft.owner_id or draft.contact.owner_id,
             ))
             draft.status = "FAILED"
             draft.contact.status = "FAILED"
@@ -184,28 +212,39 @@ def set_contact_status(contact_id, status, owner_id=None):
         db.commit()
 
 
+def _as_utc(value):
+    if value and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def get_followups(include_completed=False, owner_id=None):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     with SessionLocal() as db:
         stmt = (
             select(OutreachEvent)
             .options(joinedload(OutreachEvent.contact))
             .where(OutreachEvent.event_type == "SENT")
             .where(_owned(OutreachEvent, owner_id))
+            .where(_owned_contact(OutreachEvent, owner_id))
         )
         if not include_completed:
             stmt = stmt.where(OutreachEvent.completed.is_(False))
         stmt = stmt.order_by(OutreachEvent.followup_due_at.asc())
         rows = list(db.scalars(stmt).all())
-        return [r for r in rows if r.followup_due_at and r.followup_due_at <= now] + [
-            r for r in rows if r.followup_due_at and r.followup_due_at > now
-        ]
+        due = [r for r in rows if _as_utc(r.followup_due_at) and _as_utc(r.followup_due_at) <= now]
+        upcoming = [r for r in rows if _as_utc(r.followup_due_at) and _as_utc(r.followup_due_at) > now]
+        return due + upcoming
 
 
 def complete_followup(event_id, outcome="Reminder reviewed", owner_id=None):
     with SessionLocal() as db:
         event = db.get(OutreachEvent, int(event_id))
-        if not event or (owner_id is not None and event.owner_id != int(owner_id)):
+        if not event or (owner_id is not None and (
+            event.owner_id != int(owner_id)
+            or not event.contact
+            or event.contact.owner_id != int(owner_id)
+        )):
             raise ValueError("Follow-up not found")
         event.completed = True
         db.add(OutreachEvent(
@@ -220,15 +259,17 @@ def dashboard_stats(owner_id=None):
         count = lambda stmt: db.scalar(stmt) or 0
         contacts = _owned(Contact, owner_id)
         drafts = _owned(EmailDraft, owner_id)
+        draft_contacts = _owned_contact(EmailDraft, owner_id)
         events = _owned(OutreachEvent, owner_id)
+        event_contacts = _owned_contact(OutreachEvent, owner_id)
         return {
             "contacts": count(select(func.count(Contact.id)).where(contacts)),
-            "sent": count(select(func.count(OutreachEvent.id)).where(events, OutreachEvent.event_type == "SENT")),
+            "sent": count(select(func.count(OutreachEvent.id)).where(events, event_contacts, OutreachEvent.event_type == "SENT")),
             "replies": count(select(func.count(Contact.id)).where(contacts, Contact.status == "REPLIED")),
             "opted_out": count(select(func.count(Contact.id)).where(contacts, Contact.opted_out.is_(True))),
             "pending": count(select(func.count(Contact.id)).where(contacts, Contact.status == "PENDING")),
-            "approved": count(select(func.count(EmailDraft.id)).where(drafts, EmailDraft.status == "APPROVED")),
-            "failed": count(select(func.count(OutreachEvent.id)).where(events, OutreachEvent.event_type == "FAILED")),
+            "approved": count(select(func.count(EmailDraft.id)).where(drafts, draft_contacts, EmailDraft.status == "APPROVED")),
+            "failed": count(select(func.count(OutreachEvent.id)).where(events, event_contacts, OutreachEvent.event_type == "FAILED")),
         }
 
 
@@ -239,6 +280,7 @@ def sent_today_count(owner_id=None):
         return db.scalar(
             select(func.count(OutreachEvent.id)).where(
                 _owned(OutreachEvent, owner_id),
+                _owned_contact(OutreachEvent, owner_id),
                 OutreachEvent.event_type == "SENT",
                 OutreachEvent.occurred_at >= start,
             )
@@ -275,10 +317,14 @@ def sync_replies_best_effort(gmail, owner_id=None):
 
 def get_jobs(contact_id, owner_id=None):
     with SessionLocal() as db:
+        contact = db.get(Contact, int(contact_id))
+        if not contact or (owner_id is not None and contact.owner_id != int(owner_id)):
+            return []
         stmt = (
             select(JobPosting)
             .where(JobPosting.contact_id == int(contact_id))
             .where(_owned(JobPosting, owner_id))
+            .where(_owned_contact(JobPosting, owner_id))
             .order_by(JobPosting.created_at.desc())
         )
         return list(db.scalars(stmt).all())
@@ -287,7 +333,7 @@ def get_jobs(contact_id, owner_id=None):
 def get_job(job_id, owner_id=None):
     with SessionLocal() as db:
         job = db.get(JobPosting, int(job_id))
-        if job and owner_id is not None and job.owner_id != int(owner_id):
+        if job and not _job_owned(job, owner_id):
             return None
         return job
 
@@ -329,7 +375,7 @@ def save_jobs(contact_id, jobs, owner_id=None):
 def update_job_match(job_id, score, reasons, owner_id=None):
     with SessionLocal() as db:
         job = db.get(JobPosting, int(job_id))
-        if not job or (owner_id is not None and job.owner_id != int(owner_id)):
+        if not job or not _job_owned(job, owner_id):
             raise ValueError("Job not found")
         job.match_score = int(score)
         job.match_reasons = str(reasons)

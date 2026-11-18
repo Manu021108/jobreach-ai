@@ -31,7 +31,7 @@ class User(Base):
 
 class Contact(Base):
     __tablename__ = "contacts"
-    __table_args__ = (UniqueConstraint("email", "company_name", name="uq_contact_email_company"),)
+    __table_args__ = (UniqueConstraint("owner_id", "email", "company_name", name="uq_contact_owner_email_company"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     company_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
