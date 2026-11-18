@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.db.models import Base, Contact
-from app.services import outreach
+from app.services import audit, outreach
 
 
 def test_import_skips_duplicate_rows_in_the_same_file(monkeypatch):
@@ -10,6 +10,7 @@ def test_import_skips_duplicate_rows_in_the_same_file(monkeypatch):
     Base.metadata.create_all(engine)
     test_session = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
     monkeypatch.setattr(outreach, "SessionLocal", test_session)
+    monkeypatch.setattr(audit, "SessionLocal", test_session)
 
     added, skipped, errors = outreach.add_contacts([
         {"company_name": "Acme", "email": " PERSON@example.com "},

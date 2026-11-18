@@ -45,6 +45,18 @@ def test_send_is_blocked_for_opted_out_or_already_contacted(monkeypatch):
         assert reason == "This contact is no longer eligible for outreach."
 
 
+def test_followup_draft_can_be_sent_after_original_send(monkeypatch):
+    monkeypatch.setattr("main.settings.dry_run", False)
+    confirmation = SimpleNamespace(reviewed=True, typed_recipient="person@example.com")
+
+    reason = _send_block_reason(
+        build_draft(contact_status="SENT"), confirmation, 0, 0, None,
+        datetime.now(timezone.utc), is_followup=True,
+    )
+
+    assert reason is None
+
+
 def test_send_enforces_interval_and_caps(monkeypatch):
     monkeypatch.setattr("main.settings.dry_run", False)
     confirmation = SimpleNamespace(reviewed=True, typed_recipient="person@example.com")

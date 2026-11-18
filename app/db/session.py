@@ -24,8 +24,22 @@ def _ensure_columns():
             "owner_id": "ALTER TABLE email_drafts ADD COLUMN owner_id INTEGER",
         },
         "job_postings": {"owner_id": "ALTER TABLE job_postings ADD COLUMN owner_id INTEGER"},
-        "outreach_events": {"owner_id": "ALTER TABLE outreach_events ADD COLUMN owner_id INTEGER"},
-        "users": {"onboarding_completed": "ALTER TABLE users ADD COLUMN onboarding_completed BOOLEAN DEFAULT 1"},
+        "outreach_events": {
+            "owner_id": "ALTER TABLE outreach_events ADD COLUMN owner_id INTEGER",
+            "followup_draft_id": "ALTER TABLE outreach_events ADD COLUMN followup_draft_id INTEGER",
+        },
+        "campaigns": {
+            "last_error": "ALTER TABLE campaigns ADD COLUMN last_error TEXT DEFAULT ''",
+            "started_at": "ALTER TABLE campaigns ADD COLUMN started_at DATETIME",
+            "paused_at": "ALTER TABLE campaigns ADD COLUMN paused_at DATETIME",
+        },
+        "campaign_contacts": {
+            "last_attempt_at": "ALTER TABLE campaign_contacts ADD COLUMN last_attempt_at DATETIME",
+        },
+        "users": {
+            "onboarding_completed": "ALTER TABLE users ADD COLUMN onboarding_completed BOOLEAN DEFAULT 1",
+            "dry_run": "ALTER TABLE users ADD COLUMN dry_run BOOLEAN",
+        },
     }
     for table, columns in required.items():
         if table not in tables:

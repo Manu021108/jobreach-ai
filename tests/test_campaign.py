@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 import main
 from app.db import session as db_session
 from app.db.models import Base, Contact
+from app.services import audit
 from app.services import auth as auth_service
 from app.services import campaign as campaign_service
 from app.services import gmail_tokens
@@ -33,7 +34,7 @@ def client_factory(monkeypatch, tmp_path):
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
     modules = (
-        db_session, auth_service, gmail_tokens, outreach_service, profile_service,
+        db_session, audit, auth_service, gmail_tokens, outreach_service, profile_service,
         campaign_service, main,
     )
     for module in modules:

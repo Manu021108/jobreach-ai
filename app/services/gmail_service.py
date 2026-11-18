@@ -1,5 +1,6 @@
 import base64
 import mimetypes
+import re
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -71,6 +72,10 @@ class GmailService:
         if self.email:
             display_name = sender_name if sender_name is not None else settings.sender_name
             message["From"] = f"{display_name} <{self.email}>" if display_name else self.email
+        unsubscribe = re.search(r"https?://[^\s]+/api/unsubscribe\?token=[^\s]+", str(body or ""))
+        if unsubscribe:
+            message["List-Unsubscribe"] = f"<{unsubscribe.group(0)}>"
+            message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
         message.set_content(body)
         mime_type, _ = mimetypes.guess_type(str(attachment))
         maintype, subtype = (mime_type or "application/pdf").split("/", 1)

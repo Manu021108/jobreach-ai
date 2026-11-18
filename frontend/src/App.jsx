@@ -7,8 +7,10 @@ const navigation = [
   { id: "jobs", label: "Job Match", icon: "jobs" },
   { id: "campaign", label: "Campaign & Send", icon: "campaign" },
   { id: "followups", label: "Follow-ups", icon: "followups" },
+  { id: "audit", label: "Audit log", icon: "audit" },
   { id: "unlock", label: "Unlock", icon: "shield" },
   { id: "settings", label: "Profile & Settings", icon: "settings" },
+  { id: "legal", label: "Legal", icon: "file" },
 ];
 
 const statuses = [
@@ -23,6 +25,7 @@ const icons = {
   campaign: <svg viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>,
   jobs: <svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18"/></svg>,
   followups: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
+  audit: <svg viewBox="0 0 24 24"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>,
   settings: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a2 2 0 0 1-4 0v-.1a1 1 0 0 0-.7-.9 1 1 0 0 0-1.1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a2 2 0 0 1 0-4h.1a1 1 0 0 0 .9-.7 1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2h.1a1 1 0 0 0 .6-.9V4a2 2 0 0 1 4 0v.1a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1v.1a1 1 0 0 0 .9.6H20a2 2 0 0 1 0 4h-.1a1 1 0 0 0-.9.6z"/></svg>,
   refresh: <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>,
   plus: <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>,
@@ -33,6 +36,7 @@ const icons = {
   spark: <svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.8L18.6 9l-4.2 2.5L13 16l-1-4.5L7.8 9l4.4-1.2L12 3z"/></svg>,
   mail: <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>,
   reply: <svg viewBox="0 0 24 24"><path d="M9 17l-5-5 5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>,
+  eye: <svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>,
   inbox: <svg viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5 4h14l3 8v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6l3-8z"/></svg>,
   users: <svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
   shield: <svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7l8-4z"/></svg>,
@@ -68,7 +72,7 @@ const authModes = [
   { id: "reset", label: "Reset" },
 ];
 
-function Auth({ onAuthenticated, initialMode = "login", initialToken = "" }) {
+function Auth({ onAuthenticated, onLegal, initialMode = "login", initialToken = "" }) {
   const [mode, setMode] = useState(initialMode);
   const [form, setForm] = useState({ name: "", email: "", password: "", token: initialToken });
   const [busy, setBusy] = useState(false);
@@ -148,7 +152,11 @@ function Auth({ onAuthenticated, initialMode = "login", initialToken = "" }) {
           {busy ? <><span className="spinner" /> Working…</> : mode === "login" ? "Sign in" : mode === "register" ? "Create account" : mode === "reset" ? "Send reset link" : "Set new password"}
         </button>
         {mode === "login" && <button className="button button-ghost full-button" type="button" onClick={() => { setMode("reset"); setError(""); setMessage(""); }}>Forgot password?</button>}
-        <p className="auth-footnote">Local workspace · Your data stays on this device</p>
+          <p className="auth-footnote">Local workspace · Your data stays on this device</p>
+          <div className="auth-legal">
+            <button type="button" onClick={() => onLegal?.("privacy")}>Privacy</button>
+            <button type="button" onClick={() => onLegal?.("terms")}>Terms</button>
+          </div>
       </form>
     </div>
   );
@@ -300,9 +308,11 @@ function App() {
   const [contacts, setContacts] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [followups, setFollowups] = useState([]);
+  const [auditLog, setAuditLog] = useState([]);
   const [settings, setSettings] = useState(null);
   const [billing, setBilling] = useState(null);
   const [hrDatabase, setHrDatabase] = useState(null);
+  const [legalDoc, setLegalDoc] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState("");
@@ -333,9 +343,9 @@ function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [overview, contactRows, draftRows, followupRows, config, billingStatus, database] = await Promise.all([
+      const [overview, contactRows, draftRows, followupRows, config, billingStatus, database, auditRows] = await Promise.all([
         api("/dashboard"), api("/contacts"), api("/drafts"), api("/followups"), api("/settings"),
-        api("/billing/entitlement"), api("/hr-database"),
+        api("/billing/entitlement"), api("/hr-database"), api("/audit"),
       ]);
       setDashboard(overview);
       setContacts(contactRows);
@@ -344,6 +354,7 @@ function App() {
       setSettings(config);
       setBilling(billingStatus);
       setHrDatabase(database);
+      setAuditLog(auditRows);
       setError("");
     } catch (e) { setError(e.message); }
   }, []);
@@ -356,15 +367,19 @@ function App() {
 
   const signOut = async () => {
     try { await api("/auth/logout", { method: "POST" }); } catch { /* ignore */ }
-    setUser(null); setDashboard(null); setContacts([]); setDrafts([]); setFollowups([]); setSettings(null); setBilling(null); setHrDatabase(null);
+    setUser(null); setDashboard(null); setContacts([]); setDrafts([]); setFollowups([]); setAuditLog([]); setSettings(null); setBilling(null); setHrDatabase(null);
   };
 
   if (!authReady) return <div className="auth-loading">Loading JobReach AI…</div>;
+  if (!user && legalDoc) {
+    return <LegalPage doc={legalDoc} standalone onDocChange={setLegalDoc} onBack={() => setLegalDoc(null)} />;
+  }
   if (!user) {
     return (
       <Auth
         initialMode={authStart.mode}
         initialToken={authStart.token}
+        onLegal={setLegalDoc}
         onAuthenticated={(next) => {
           window.history.replaceState({}, document.title, window.location.pathname);
           setUser(next);
@@ -445,16 +460,26 @@ function App() {
         <div className="content">
           {error && <div className="alert alert-error" role="alert"><span>!</span><p>{error}</p><button onClick={() => setError("")} aria-label="Dismiss"><Icon name="x" /></button></div>}
           {notice && <div className="alert alert-success" role="status"><span>✓</span><p>{notice}</p><button onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="x" /></button></div>}
-          {page === "overview" && <Overview dashboard={dashboard} onNavigate={setPage} />}
+          {page === "overview" && <Overview dashboard={dashboard} onNavigate={setPage} busy={busy} run={run} />}
           {page === "companies" && <Companies contacts={contacts} settings={settings} busy={busy} run={run} onNavigate={setPage} />}
           {page === "studio" && <Studio contacts={contacts} busy={busy} run={run} />}
           {page === "jobs" && <JobMatch contacts={contacts} busy={busy} run={run} onNavigate={setPage} />}
           {page === "campaign" && <Campaign contacts={contacts} drafts={drafts} settings={settings} busy={busy} run={run} />}
-          {page === "followups" && <FollowUps items={followups} busy={busy} run={run} />}
+          {page === "followups" && <FollowUps items={followups} busy={busy} run={run} onNavigate={setPage} />}
+          {page === "audit" && <AuditLogPage items={auditLog} />}
           {page === "unlock" && <UnlockPage database={hrDatabase} billing={billing} settings={settings} busy={busy} run={run} />}
+          {page === "legal" && <LegalPage doc={legalDoc || "privacy"} onDocChange={setLegalDoc} />}
           {page === "settings" && <SettingsPage settings={settings} busy={busy} run={run} onUserUpdate={setUser} onNavigate={setPage} />}
         </div>
-        <footer className="footer"><span>JobReach AI</span><span>Private by design · Your data stays on this device</span></footer>
+        <footer className="footer">
+          <span>JobReach AI</span>
+          <span>Private by design · Your data stays on this device</span>
+          <div className="footer-links">
+            <button type="button" onClick={() => { setLegalDoc("privacy"); setPage("legal"); }}>Privacy</button>
+            <button type="button" onClick={() => { setLegalDoc("terms"); setPage("legal"); }}>Terms</button>
+            <button type="button" onClick={() => setPage("audit")}>Audit log</button>
+          </div>
+        </footer>
       </main>
     </div>
   );
@@ -473,13 +498,18 @@ function PageHeading({ eyebrow, title, description, action }) {
   );
 }
 
-function Overview({ dashboard, onNavigate }) {
+function Overview({ dashboard, onNavigate, busy, run }) {
   const stats = dashboard?.stats;
+  const syncInbox = () => run(
+    () => api("/replies/sync", { method: "POST" }),
+    (d) => `Matched ${d.replies} repl${d.replies === 1 ? "y" : "ies"} and ${d.opt_outs} opt-out${d.opt_outs === 1 ? "" : "s"}.`,
+  );
   const metrics = [
-    { label: "Total contacts", value: stats?.contacts ?? "—", icon: "users", tone: "tone-mint", note: "In your outreach list" },
-    { label: "Emails accepted", value: stats?.sent ?? "—", icon: "send", tone: "tone-blue", note: "Accepted by Gmail" },
-    { label: "Replies marked", value: stats?.replies ?? "—", icon: "reply", tone: "tone-yellow", note: "Matched or marked by you" },
-    { label: "Pending contacts", value: stats?.pending ?? "—", icon: "inbox", tone: "tone-purple", note: "Ready for a first draft" },
+    { label: "Emails sent", value: stats?.sent ?? "—", icon: "send", tone: "tone-blue", note: "Accepted by Gmail" },
+    { label: "Opened", value: stats?.opened ?? "—", icon: "eye", tone: "tone-purple", note: "Not tracked by Gmail" },
+    { label: "Replied", value: stats?.replies ?? "—", icon: "reply", tone: "tone-yellow", note: "Matched or marked by you" },
+    { label: "Opted out", value: stats?.opted_out ?? "—", icon: "x", tone: "tone-red", note: "Do not contact" },
+    { label: "Remaining today", value: stats?.remaining_today ?? "—", icon: "shield", tone: "tone-mint", note: "Daily send quota" },
   ];
   return (
     <>
@@ -487,7 +517,7 @@ function Overview({ dashboard, onNavigate }) {
         eyebrow="Your outreach, at a glance"
         title="Overview"
         description="A clear view of your job-search conversations and next steps."
-        action={<button className="button button-primary" onClick={() => onNavigate("companies")}><Icon name="plus" /> Add contacts</button>}
+        action={<div className="button-row"><button className="button button-secondary" disabled={busy} onClick={syncInbox}><Icon name="refresh" /> Sync inbox</button><button className="button button-primary" onClick={() => onNavigate("companies")}><Icon name="plus" /> Add contacts</button></div>}
       />
       <div className="metric-grid">
         {metrics.map((m) => (
@@ -523,8 +553,9 @@ function Overview({ dashboard, onNavigate }) {
             <div className="panel-header"><div><h2 className="section-heading">Pipeline snapshot</h2><p className="panel-subtitle">Keep your outreach moving</p></div></div>
             <div className="snapshot-row"><span><i className="snapshot-dot dot-green" />Approved drafts</span><b>{stats?.approved ?? "—"}</b></div>
             <div className="snapshot-row"><span><i className="snapshot-dot dot-red" />Failed attempts</span><b>{stats?.failed ?? "—"}</b></div>
-            <div className="snapshot-row"><span><i className="snapshot-dot dot-gray" />Opted out</span><b>{stats?.opted_out ?? "—"}</b></div>
-            <button className="button button-secondary full-button" style={{ marginTop: 8 }} onClick={() => onNavigate("campaign")}>Review campaign <Icon name="arrow" /></button>
+            <div className="snapshot-row"><span><i className="snapshot-dot dot-yellow" />Follow-ups due</span><b>{dashboard?.followups?.due ?? "—"}</b></div>
+            <div className="snapshot-row"><span><i className="snapshot-dot dot-gray" />Pending contacts</span><b>{stats?.pending ?? "—"}</b></div>
+            <button className="button button-secondary full-button" style={{ marginTop: 8 }} onClick={() => onNavigate("followups")}>Review follow-ups <Icon name="arrow" /></button>
           </section>
         </aside>
       </div>
@@ -1068,14 +1099,22 @@ function Campaign({ contacts = [], drafts, settings, busy, run }) {
     }
   };
   const queueCampaign = async (campaignId) => {
-    const result = await run(() => api(`/campaigns/${campaignId}/queue`, { method: "POST" }), (data) => `${data.queued} approved draft(s) queued. Sending still requires individual confirmation.`);
+    const result = await run(() => api(`/campaigns/${campaignId}/queue`, { method: "POST" }), (data) => `${data.queued} approved draft(s) queued. Start auto-send when you are ready.`);
+    if (result) await loadCampaigns();
+  };
+  const startAutoSend = async (campaignId) => {
+    const result = await run(() => api(`/campaigns/${campaignId}/start`, { method: "POST" }), (data) => data.message || "Automated sending started.");
+    if (result) await loadCampaigns();
+  };
+  const pauseAutoSend = async (campaignId) => {
+    const result = await run(() => api(`/campaigns/${campaignId}/pause`, { method: "POST" }), (data) => data.message || "Automated sending paused.");
     if (result) await loadCampaigns();
   };
   const approvedCount = drafts.filter((d) => d.status === "APPROVED").length;
 
   return (
     <>
-      <PageHeading eyebrow="Campaign builder" title="Campaign builder" description="Select contacts, generate drafts, approve, and queue. Sending stays one recipient at a time." />
+      <PageHeading eyebrow="Campaign builder" title="Campaign builder" description="Select contacts, generate drafts, approve, queue, and start automated sending with daily caps and retries." />
       <section className="panel campaign-builder-panel">
         <div className="panel-header"><div><h2 className="section-heading">Build a campaign</h2><p className="panel-subtitle">{eligibleContacts.length} eligible contacts · {selectedContacts.length} selected</p></div><span className="panel-number">00</span></div>
         <div className="campaign-builder-grid">
@@ -1101,14 +1140,15 @@ function Campaign({ contacts = [], drafts, settings, busy, run }) {
           <aside className="campaign-action-card">
             <span className="send-step">01</span>
             <h2>Generate AI drafts</h2>
-            <p>Create one personalized draft per selected contact. Nothing sends automatically.</p>
+            <p>Create one personalized draft per selected contact. Nothing sends until you approve, queue, and start auto-send.</p>
             <button className="button button-primary full-button" disabled={busy || !selectedContacts.length} onClick={generateCampaign}>Generate {selectedContacts.length || ""} draft{selectedContacts.length === 1 ? "" : "s"}</button>
             {campaignError && <div className="alert alert-error"><span>!</span><p>{campaignError}</p></div>}
           </aside>
         </div>
       </section>
       <section className="panel campaign-queue-panel">
-        <div className="panel-header"><div><h2 className="section-heading">Campaign queue</h2><p className="panel-subtitle">Generated drafts must be approved before they can be queued.</p></div><Badge>{campaigns.length} campaigns</Badge></div>
+        <div className="panel-header"><div><h2 className="section-heading">Campaign queue</h2><p className="panel-subtitle">Approve and queue drafts, then start the background sender when you are ready.</p></div><Badge>{campaigns.length} campaigns</Badge></div>
+        {settings?.dry_run && <div className="alert"><span>Preview only</span><p>Automated sending is disabled while your account is in dry-run mode.</p></div>}
         {loadingCampaigns ? <div className="empty-state"><p>Loading campaigns...</p></div> : campaigns.length ? (
           <div className="campaign-list">
             {campaigns.map((campaign) => {
@@ -1127,6 +1167,11 @@ function Campaign({ contacts = [], drafts, settings, busy, run }) {
                     <span>{campaign.counts.sent} sent</span>
                     {campaign.counts.failed > 0 && <span className="status-warn">{campaign.counts.failed} failed</span>}
                   </div>
+                  <div className="campaign-progress">
+                    <div className="campaign-progress-track"><span style={{ width: `${campaign.progress}%` }} /></div>
+                    <small>{campaign.progress}% sent</small>
+                  </div>
+                  {campaign.last_error && <div className="campaign-last-error">{campaign.last_error}</div>}
                   <div className="campaign-entry-list">
                     {campaign.entries.map((entry) => (
                       <div className="campaign-entry" key={entry.id}>
@@ -1143,7 +1188,8 @@ function Campaign({ contacts = [], drafts, settings, busy, run }) {
                   </div>
                   <div className="button-row">
                     <button className="button button-secondary" disabled={busy || !selectedForCampaign} onClick={() => approveCampaign(campaign.id)}>Approve selected ({selectedForCampaign})</button>
-                    <button className="button button-primary" disabled={busy || !campaign.counts.approved} onClick={() => queueCampaign(campaign.id)}>Queue {campaign.counts.approved} approved</button>
+                    <button className="button button-secondary" disabled={busy || !campaign.counts.approved} onClick={() => queueCampaign(campaign.id)}>Queue {campaign.counts.approved} approved</button>
+                    {campaign.status === "RUNNING" ? <button className="button button-primary" disabled={busy} onClick={() => pauseAutoSend(campaign.id)}>Pause auto-send</button> : campaign.counts.queued > 0 && <button className="button button-primary" disabled={busy || settings?.dry_run} title={settings?.dry_run ? "Turn off dry-run in Settings to enable automated sending." : ""} onClick={() => startAutoSend(campaign.id)}>Start auto-send</button>}
                   </div>
                 </article>
               );
@@ -1180,7 +1226,7 @@ function Campaign({ contacts = [], drafts, settings, busy, run }) {
               <div className="send-card-top"><span className="send-step">03</span><span className={draft?.status === "APPROVED" ? "ready-label" : "waiting-label"}>{draft?.status === "APPROVED" ? "Ready for review" : "Awaiting approval"}</span></div>
               <h2>Send email</h2>
               <p>A second confirmation protects against accidental sends.</p>
-              {settings?.dry_run ? <div className="dry-run-notice"><strong>Preview only</strong><span>DRY_RUN is on. No email will be sent.</span></div> : <div className="live-notice"><strong>Live sending enabled</strong><span>Daily limit: {settings?.max_emails_per_day}. Per-run limit: {settings?.max_emails_per_run}.</span></div>}
+              {settings?.dry_run ? <div className="dry-run-notice"><strong>Preview only</strong><span>Dry-run is on for your account. No email will be sent.</span></div> : <div className="live-notice"><strong>Live sending enabled</strong><span>Daily limit: {settings?.max_emails_per_day}. Per-run limit: {settings?.max_emails_per_run}.</span></div>}
               {draft?.status === "APPROVED" && <>
                 <button className="button button-secondary full-button" disabled={busy} onClick={showPreview}>Preview send payload</button>
                 {!settings?.dry_run && <>
@@ -1213,16 +1259,20 @@ function Campaign({ contacts = [], drafts, settings, busy, run }) {
   );
 }
 
-function FollowUps({ items, busy, run }) {
+function FollowUps({ items, busy, run, onNavigate }) {
   const [syncMessage, setSyncMessage] = useState("");
   const sync = async () => {
-    const result = await run(() => api("/replies/sync", { method: "POST" }), (d) => `Marked ${d.updated} possible reply match(es). Verify each in Gmail.`);
-    if (result) setSyncMessage(`Updated ${result.updated} possible match(es).`);
+    const result = await run(() => api("/replies/sync", { method: "POST" }), (d) => `Matched ${d.replies} repl${d.replies === 1 ? "y" : "ies"} and ${d.opt_outs} opt-out${d.opt_outs === 1 ? "" : "s"}. Verify in Gmail.`);
+    if (result) setSyncMessage(`Synced ${result.matched} match(es): ${result.replies} replies, ${result.opt_outs} opt-outs.`);
   };
+  const generateDue = () => run(
+    () => api("/followups/run", { method: "POST" }),
+    (d) => d.generated ? `Created ${d.generated} follow-up draft(s) for review.` : "No due follow-ups needed a draft.",
+  );
   return (
     <>
-      <PageHeading eyebrow="Human-checked reminders" title="Follow-up tracker" description="Check the conversation in Gmail before considering a follow-up." action={<button className="button button-secondary" disabled={busy} onClick={sync}><Icon name="refresh" /> Sync possible replies</button>} />
-      <div className="reminder-banner"><span>i</span><p><strong>Reminders only.</strong> Review replies, bounces, and opt-outs before any follow-up. JobReach never sends follow-ups automatically.</p></div>
+      <PageHeading eyebrow="Automated drafts, human review" title="Follow-up tracker" description="Due follow-ups become drafts automatically. Nothing is sent without your review." action={<div className="button-row"><button className="button button-secondary" disabled={busy} onClick={sync}><Icon name="refresh" /> Sync inbox</button><button className="button button-primary" disabled={busy} onClick={generateDue}>Generate due drafts</button></div>} />
+      <div className="reminder-banner"><span>i</span><p><strong>Drafts only.</strong> Due follow-ups are turned into drafts automatically, but JobReach never sends follow-ups without your approval. Replies and opt-outs are matched from Gmail on sync.</p></div>
       {syncMessage && <p className="inline-note">{syncMessage}</p>}
       {!items.length ? <div className="panel"><EmptyState title="No follow-up reminders" detail="A reminder is created when an email is sent. Completed reminders disappear from this view." /></div> : (
         <section className="panel">
@@ -1231,14 +1281,120 @@ function FollowUps({ items, busy, run }) {
             {items.map((item) => (
               <article className="followup-row" key={item.id}>
                 <div className="followup-date"><span>Due</span><strong>{formatDate(item.followup_due_at)}</strong><small>Sent {formatDate(item.occurred_at)}</small></div>
-                <div className="followup-contact"><strong>{item.contact.company_name}</strong><span>{item.contact.email} · {item.contact.role || "Contact"}</span><small>Check for replies or bounce notices in Gmail.</small></div>
-                <button className="button button-secondary" disabled={busy} onClick={() => run(() => api(`/followups/${item.id}/complete`, { method: "POST" }), "Reminder marked reviewed.")}>Mark reviewed</button>
+                <div className="followup-contact"><strong>{item.contact.company_name}</strong><span>{item.contact.email} A� {item.contact.role || "Contact"}</span><small>{item.followup_draft_id ? `Follow-up draft #${item.followup_draft_id} is ready for review.` : "Check for replies or bounce notices in Gmail."}</small></div>
+                {item.followup_draft_id ? <button className="button button-primary" disabled={busy} onClick={() => onNavigate("campaign")}>Review draft</button> : <button className="button button-secondary" disabled={busy} onClick={() => run(() => api(`/followups/${item.id}/complete`, { method: "POST" }), "Reminder marked reviewed.")}>Mark reviewed</button>}
               </article>
             ))}
           </div>
         </section>
       )}
     </>
+  );
+}
+
+const AUDIT_LABELS = {
+  CONTACTS_IMPORTED: "Contacts imported",
+  DRAFT_CREATED: "Draft created",
+  DRAFT_APPROVED: "Draft approved",
+  EMAIL_SENT: "Email sent",
+  EMAIL_FAILED: "Email failed",
+  EMAIL_RETRY_SCHEDULED: "Email retry scheduled",
+  CONTACT_STATUS_CHANGED: "Contact status changed",
+  OPT_OUT_DETECTED: "Opt-out detected",
+  REPLY_MATCHED: "Reply matched",
+  UNSUBSCRIBE_LINK_USED: "Unsubscribe link used",
+  CAMPAIGN_STARTED: "Campaign started",
+  CAMPAIGN_PAUSED: "Campaign paused",
+  DRY_RUN_ENABLED: "Dry-run enabled",
+  DRY_RUN_DISABLED: "Dry-run disabled",
+};
+
+function AuditLogPage({ items }) {
+  return (
+    <>
+      <PageHeading eyebrow="Transparency" title="Audit log" description="Recent account activity, including imports, drafts, sends, replies, opt-outs, and safety changes." />
+      <div className="reminder-banner"><span>i</span><p><strong>Read-only record.</strong> Audit entries are created automatically for important actions. They help you verify what happened without relying on memory.</p></div>
+      {!items.length ? <div className="panel"><EmptyState title="No audit entries yet" detail="Import contacts or create a draft to start building your activity history." /></div> : (
+        <section className="panel">
+          <div className="panel-header"><div><h2 className="section-heading">Recent activity <span className="inline-count">{items.length}</span></h2><p className="panel-subtitle">Newest first · up to 100 entries</p></div></div>
+          <div className="audit-table-wrap">
+            <table className="audit-table">
+              <thead><tr><th>When</th><th>Action</th><th>Details</th><th>Contact</th></tr></thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr key={item.id}>
+                    <td>{formatDate(item.created_at)}</td>
+                    <td><span className="audit-action">{AUDIT_LABELS[item.action] || item.action}</span></td>
+                    <td>{item.details || "—"}</td>
+                    <td>{item.company_name ? <><strong>{item.company_name}</strong><br /><small>{item.contact_email}</small></> : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
+
+const LEGAL_DOCS = {
+  privacy: {
+    title: "Privacy Policy",
+    summary: "What JobReach AI stores, why it stores it, and the controls available to you.",
+    sections: [
+      ["Data we store", "JobReach AI stores your account details, profile and resume information, imported contacts, drafts, send history, follow-up reminders, and audit log entries. Data is stored in the local application database."],
+      ["Gmail access", "When you connect Gmail, JobReach AI requests permission to send messages you approve and to read replies and opt-out requests during inbox sync. OAuth tokens are encrypted at rest. JobReach AI does not sell your data."],
+      ["AI drafting", "Profile and contact context may be sent to the configured AI provider to generate email drafts. Do not submit confidential information you are not permitted to share with that provider."],
+      ["Your controls", "You can edit your profile, remove your resume, delete contacts and drafts, disconnect Gmail, change dry-run settings, and request account deletion. Every outreach email includes an unsubscribe option."],
+      ["Opt-outs and retention", "When a recipient unsubscribes, their contact is marked opted out and future sends are blocked. Operational records, including audit entries, may be retained to prevent unwanted contact and to maintain safety and compliance."],
+      ["Security", "Access is protected by your account credentials. Dry-run mode is enabled by default, and sensitive actions are recorded in the audit log. No system is perfectly secure, so use a strong unique password."],
+      ["Contact", "For privacy questions or data requests, contact the operator of this JobReach AI deployment."],
+    ],
+  },
+  terms: {
+    title: "Terms of Service",
+    summary: "The rules for using JobReach AI responsibly and the limits of the service.",
+    sections: [
+      ["Using the service", "JobReach AI helps you organize outreach, generate draft emails, and send messages you explicitly review. You must be old enough to enter a binding agreement and use the service only for lawful purposes."],
+      ["Your responsibilities", "You are responsible for the accuracy of your profile, resume, contact data, and messages. You must have a lawful basis to contact recipients and must comply with applicable anti-spam, privacy, and email-marketing laws."],
+      ["No spam or abuse", "Do not use JobReach AI to send bulk unsolicited messages, harass recipients, impersonate others, evade opt-outs, or violate provider policies. Opt-out requests must be respected."],
+      ["AI-generated content", "AI drafts may be inaccurate or incomplete. You must review every draft, including recipient, relevance, claims, attachments, and tone, before approving or sending it."],
+      ["Sending limits and availability", "Caps, throttling, and dry-run controls exist to reduce risk. The service may pause or block sending when limits or safety checks are triggered. Availability is not guaranteed."],
+      ["No guarantees", "JobReach AI does not guarantee replies, interviews, job offers, deliverability, or legal compliance. You remain responsible for your outreach and its consequences."],
+      ["Changes and termination", "Features and these terms may change. Access may be suspended for abuse, security risk, or violation of these terms. You may stop using the service at any time."],
+    ],
+  },
+};
+
+function LegalPage({ doc, onDocChange, standalone = false, onBack }) {
+  const content = LEGAL_DOCS[doc] || LEGAL_DOCS.privacy;
+  return (
+    <div className={standalone ? "legal-standalone" : ""}>
+      {standalone ? (
+        <div className="legal-topbar">
+          <button type="button" className="button button-secondary" onClick={onBack}>← Back to sign in</button>
+          <span>JobReach AI</span>
+        </div>
+      ) : (
+        <PageHeading eyebrow="Legal" title="Privacy & terms" description="How JobReach AI handles your data and the rules for responsible outreach." />
+      )}
+      <section className="panel legal-panel">
+        <div className="legal-tabs">
+          <button type="button" className={doc === "privacy" ? "active" : ""} onClick={() => onDocChange("privacy")}>Privacy</button>
+          <button type="button" className={doc === "terms" ? "active" : ""} onClick={() => onDocChange("terms")}>Terms</button>
+        </div>
+        <h2>{content.title}</h2>
+        <p className="legal-summary">{content.summary}</p>
+        {content.sections.map(([heading, body]) => (
+          <div className="legal-section" key={heading}>
+            <h3>{heading}</h3>
+            <p>{body}</p>
+          </div>
+        ))}
+        <p className="legal-updated">Last updated November 2026. This page is a plain-language summary and does not replace professional legal advice.</p>
+      </section>
+    </div>
   );
 }
 
@@ -1272,7 +1428,15 @@ function SettingsPage({ settings, busy, run, onUserUpdate, onNavigate }) {
     form.append("file", resume);
     run(() => api("/profile/resume", { method: "POST", body: form }), (r) => `Resume saved: ${r.resume_name}`);
   };
-  const removeResume = () => run(() => api("/profile/resume", { method: "DELETE" }), "Resume removed.");
+    const removeResume = () => run(() => api("/profile/resume", { method: "DELETE" }), "Resume removed.");
+    const toggleDryRun = () => run(
+      () => api("/settings/dry-run", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dry_run: !settings?.dry_run }),
+      }),
+      (result) => result.dry_run ? "Dry-run mode enabled. Sending is blocked." : "Live sending enabled for your account. Every send still requires review and confirmation.",
+    );
   const testAi = async () => {
     const result = await run(() => api("/settings/test-ai", { method: "POST" }), (d) => `AI connection successful: ${d.response}`, false);
     if (result) setTestResult(result.response);
@@ -1358,16 +1522,21 @@ function SettingsPage({ settings, busy, run, onUserUpdate, onNavigate }) {
 
         <section className="panel">
           <div className="panel-header"><div><h2 className="section-heading">Sending safety</h2><p className="panel-subtitle">Review the safeguards before enabling live sending</p></div><span className="panel-number">04</span></div>
-          <div className="safety-toggle-row">
-            <div><strong>{settings?.dry_run ? "Preview mode is active" : "Live sending is active"}</strong><span>{settings?.dry_run ? "No emails can be sent until DRY_RUN is changed in .env." : "Every individual send still requires review and confirmation."}</span></div>
-            <Badge>{settings?.dry_run ? "DRY_RUN ON" : "DRY_RUN OFF"}</Badge>
-          </div>
-          <div className="limit-grid">
-            <div><span>Per-run cap</span><strong>{settings?.max_emails_per_run ?? "—"}</strong></div>
-            <div><span>Daily cap</span><strong>{settings?.max_emails_per_day ?? "—"}</strong></div>
-            <div><span>Send spacing</span><strong>{settings?.min_seconds_between_emails ?? "—"}s</strong></div>
-          </div>
-          <div className="config-note">Keep limits low. Change <code>DRY_RUN=false</code> in <code>.env</code> only after using preview mode and verifying your Gmail setup.</div>
+            <div className="safety-toggle-row">
+              <div><strong>{settings?.dry_run ? "Dry-run is active" : "Live sending is active"}</strong><span>{settings?.dry_run ? "No emails can be sent from your account while dry-run is on." : "Every individual send still requires review and confirmation."}</span></div>
+              <div className="safety-toggle-actions">
+                <Badge>{settings?.dry_run ? "DRY-RUN ON" : "DRY-RUN OFF"}</Badge>
+                <button className={`button ${settings?.dry_run ? "button-secondary" : "button-ghost"}`} disabled={busy} onClick={toggleDryRun}>
+                  {settings?.dry_run ? "Enable live sending" : "Turn on dry-run"}
+                </button>
+              </div>
+            </div>
+            <div className="limit-grid">
+              <div><span>Per-run cap</span><strong>{settings?.max_emails_per_run ?? "—"}</strong></div>
+              <div><span>Daily cap</span><strong>{settings?.max_emails_per_day ?? "—"}</strong></div>
+              <div><span>Send spacing</span><strong>{settings?.min_seconds_between_emails ?? "—"}s</strong></div>
+            </div>
+            <div className="config-note">Dry-run is a per-account setting. Keep limits low and enable live sending only after verifying your Gmail connection and resume.</div>
         </section>
 
         <section className="panel">

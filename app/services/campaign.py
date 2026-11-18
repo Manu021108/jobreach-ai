@@ -40,6 +40,7 @@ def _campaign_entry_dict(entry):
         "error": entry.error,
         "attempts": entry.attempts,
         "scheduled_at": _iso(entry.scheduled_at),
+        "last_attempt_at": _iso(entry.last_attempt_at),
         "sent_at": _iso(entry.sent_at),
         "company_name": contact.company_name if contact else "",
         "email": contact.email if contact else "",
@@ -62,18 +63,28 @@ def list_campaigns(owner_id):
                 .order_by(CampaignContact.id)
             ).all())
             states = [entry.state for entry in entries]
+            sent = states.count("SENT")
+            queued_times = [
+                entry.scheduled_at for entry in entries
+                if entry.state == "QUEUED" and entry.scheduled_at
+            ]
             result.append({
                 "id": campaign.id,
                 "name": campaign.name,
                 "status": campaign.status,
+                "last_error": campaign.last_error,
+                "started_at": _iso(campaign.started_at),
+                "paused_at": _iso(campaign.paused_at),
+                "next_send_at": _iso(min(queued_times)) if queued_times else None,
                 "created_at": _iso(campaign.created_at),
+                "progress": round((sent / len(entries)) * 100) if entries else 0,
                 "entries": [_campaign_entry_dict(entry) for entry in entries],
                 "counts": {
                     "total": len(entries),
                     "generated": states.count("GENERATED"),
                     "approved": states.count("APPROVED"),
                     "queued": states.count("QUEUED"),
-                    "sent": states.count("SENT"),
+                    "sent": sent,
                     "failed": states.count("FAILED"),
                 },
             })
@@ -211,6 +222,7 @@ def sync_draft_state(draft_id, owner_id, state):
         if state == "SENT":
             entry.sent_at = datetime.now(timezone.utc)
             entry.attempts += 1
+        db.flush()
         pending = db.scalar(
             select(CampaignContact)
             .where(CampaignContact.campaign_id == entry.campaign_id, CampaignContact.state != "SENT")

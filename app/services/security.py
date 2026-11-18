@@ -10,6 +10,7 @@ from app.config import settings
 SECRET_KEY = settings.auth_secret_key or secrets.token_urlsafe(48)
 SESSION_MAX_AGE = settings.auth_session_days * 24 * 60 * 60
 OAUTH_STATE_MAX_AGE = 10 * 60
+UNSUBSCRIBE_MAX_AGE = 5 * 365 * 24 * 60 * 60
 
 
 def hash_password(password):
@@ -54,7 +55,7 @@ def _sign_payload(payload):
     return f"{body}.{signature}"
 
 
-def _read_signed(token):
+def _read_signed_payload(token):
     try:
         body, signature = str(token or "").split(".", 1)
         expected = _encode(hmac.new(SECRET_KEY.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest())
@@ -63,8 +64,18 @@ def _read_signed(token):
         payload = json.loads(_decode(body))
         if int(payload["exp"]) < int(time.time()):
             return None
-        return int(payload["uid"])
+        return payload
     except Exception:
+        return None
+
+
+def _read_signed(token):
+    payload = _read_signed_payload(token)
+    if not payload:
+        return None
+    try:
+        return int(payload["uid"])
+    except (KeyError, TypeError, ValueError):
         return None
 
 
@@ -87,3 +98,22 @@ def make_oauth_state(user_id):
 
 def read_oauth_state(token):
     return _read_signed(token)
+
+
+def make_unsubscribe_token(contact_id, owner_id):
+    payload = {
+        "cid": int(contact_id),
+        "uid": int(owner_id) if owner_id is not None else 0,
+        "exp": int(time.time()) + UNSUBSCRIBE_MAX_AGE,
+    }
+    return _sign_payload(payload)
+
+
+def read_unsubscribe_token(token):
+    payload = _read_signed_payload(token)
+    if not payload:
+        return None
+    try:
+        return {"contact_id": int(payload["cid"]), "owner_id": int(payload["uid"])}
+    except (KeyError, TypeError, ValueError):
+        return None

@@ -31,7 +31,14 @@ class Settings(BaseSettings):
     max_emails_per_run: int = Field(default=5, ge=1, le=25)
     min_seconds_between_emails: int = Field(default=45, ge=10, le=3600)
     max_emails_per_day: int = Field(default=20, ge=1, le=100)
+    auto_send_worker_enabled: bool = True
+    auto_send_poll_seconds: int = Field(default=5, ge=1, le=60)
+    auto_send_max_attempts: int = Field(default=3, ge=1, le=10)
+    auto_send_retry_backoff_seconds: int = Field(default=300, ge=10, le=3600)
     followup_default_days: int = Field(default=7, ge=2, le=30)
+    followup_auto_draft_enabled: bool = True
+    followup_poll_seconds: int = Field(default=60, ge=10, le=3600)
+    followup_max_per_run: int = Field(default=5, ge=1, le=25)
     auth_secret_key: str = ""
     auth_session_days: int = Field(default=7, ge=1, le=30)
     auth_cookie_secure: bool = False

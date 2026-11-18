@@ -1,4 +1,5 @@
 import hmac
+import html
 import io
 import re
 import tempfile
@@ -11,7 +12,7 @@ from typing import Literal
 
 import pandas as pd
 from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -20,9 +21,13 @@ from starlette.staticfiles import StaticFiles
 from app.config import settings
 from app.db.models import Contact, OutreachEvent, User
 from app.db.session import SessionLocal, init_db
+from app.services import audit as audit_service
 from app.services import auth as auth_service
+from app.services import auto_sender
 from app.services import billing as billing_service
 from app.services import campaign as campaign_service
+from app.services import compliance
+from app.services import followups as followup_service
 from app.services import gmail_service, gmail_tokens, hr_database, profile_service
 from app.services.ai_writer import AIWriter
 from app.services.gmail_service import GmailService
@@ -41,6 +46,7 @@ from app.services.outreach import (
     approve_draft,
     complete_followup,
     dashboard_stats,
+    followup_counts,
     get_contact,
     get_contacts,
     get_drafts,
@@ -53,7 +59,8 @@ from app.services.outreach import (
     save_jobs,
     sent_today_count,
     set_contact_status,
-    sync_replies_best_effort,
+    sync_inbox_best_effort,
+    unsubscribe_contact,
     update_contact_website,
     update_draft,
     update_job_match,
@@ -62,7 +69,15 @@ from app.services.outreach import (
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    yield
+    if settings.auto_send_worker_enabled:
+        auto_sender.start_worker()
+    if settings.followup_auto_draft_enabled:
+        followup_service.start_worker()
+    try:
+        yield
+    finally:
+        followup_service.stop_worker()
+        auto_sender.stop_worker()
 
 
 app = FastAPI(title="JobReach AI", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -127,6 +142,10 @@ class EmailInput(BaseModel):
     email: str = Field(max_length=320)
 
 
+class DryRunUpdate(BaseModel):
+    dry_run: bool
+
+
 class ResetPasswordInput(BaseModel):
     token: str = Field(min_length=10, max_length=200)
     password: str = Field(min_length=8, max_length=128)
@@ -162,6 +181,7 @@ def _user_dict(user):
         "email": user.email,
         "is_verified": user.is_verified,
         "onboarding_completed": bool(user.onboarding_completed),
+        "dry_run": compliance.dry_run_enabled(user),
         "last_login_at": _iso(user.last_login_at),
         "created_at": _iso(user.created_at),
     }
@@ -261,6 +281,7 @@ def _followup_dict(event):
         "event_type": event.event_type,
         "occurred_at": _iso(event.occurred_at),
         "followup_due_at": _iso(event.followup_due_at),
+        "followup_draft_id": event.followup_draft_id,
         "completed": event.completed,
         "contact": _contact_dict(event.contact),
     }
@@ -307,14 +328,17 @@ def _latest_send_at(owner_id=None):
         return occurred_at.replace(tzinfo=timezone.utc) if occurred_at.tzinfo is None else occurred_at
 
 
-def _send_block_reason(draft, confirmation, sent_today, sent_this_run, last_sent_at, now):
-    if settings.dry_run:
+def _send_block_reason(draft, confirmation, sent_today, sent_this_run, last_sent_at, now, is_followup=False, dry_run=None):
+    dry_run = settings.dry_run if dry_run is None else bool(dry_run)
+    if dry_run:
         return "Dry-run is enabled. Sending is disabled."
     if draft.status != "APPROVED":
         return "Only approved drafts can be sent."
     if draft.contact.opted_out or draft.contact.status in {
-        "SENT", "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED",
+        "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED",
     }:
+        return "This contact is no longer eligible for outreach."
+    if draft.contact.status == "SENT" and not is_followup:
         return "This contact is no longer eligible for outreach."
     if not confirmation.reviewed or confirmation.typed_recipient != draft.contact.email:
         return "Review the email and type the exact recipient address to confirm."
@@ -463,12 +487,16 @@ def gmail_disconnect(user: User = Depends(get_current_user)):
 
 @app.get("/api/dashboard")
 def dashboard(user: User = Depends(get_current_user)):
+    sent_today = sent_today_count(user.id)
+    stats = dashboard_stats(user.id)
+    stats["remaining_today"] = max(0, settings.max_emails_per_day - sent_today)
     return {
-        "stats": dashboard_stats(user.id),
-        "sent_today": sent_today_count(user.id),
+        "stats": stats,
+        "sent_today": sent_today,
         "daily_cap": settings.max_emails_per_day,
         "run_cap": settings.max_emails_per_run,
-        "dry_run": settings.dry_run,
+        "dry_run": compliance.dry_run_enabled(user),
+        "followups": followup_counts(user.id),
         "recent_contacts": [_contact_dict(contact) for contact in get_contacts(owner_id=user.id)[:15]],
     }
 
@@ -642,6 +670,23 @@ def queue_campaign(campaign_id: int, user: User = Depends(get_current_user)):
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
+@app.post("/api/campaigns/{campaign_id}/start")
+def start_campaign(campaign_id: int, user: User = Depends(get_current_user)):
+    try:
+        return auto_sender.start_campaign(campaign_id, user.id)
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/campaigns/{campaign_id}/pause")
+def pause_campaign(campaign_id: int, user: User = Depends(get_current_user)):
+    try:
+        return auto_sender.pause_campaign(campaign_id, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/contacts/{contact_id}/generate")
 def generate_draft(contact_id: int, payload: CompanyContextUpdate, user: User = Depends(get_current_user)):
     with SessionLocal() as db:
@@ -707,7 +752,7 @@ def preview_draft(draft_id: int, user: User = Depends(get_current_user)):
         "to": draft.contact.email,
         "company": draft.contact.company_name,
         "subject": draft.subject,
-        "body": draft.body,
+        "body": compliance.with_opt_out(draft.body, draft.contact, user.id),
         "resume": _resume_filename(user) if _user_resume(user) else None,
         "job": job,
     }
@@ -719,9 +764,14 @@ def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depen
     with _send_lock:
         draft = _get_owned_draft(draft_id, user.id)
         now = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            is_followup = bool(db.scalar(
+                select(OutreachEvent.id).where(OutreachEvent.followup_draft_id == draft.id)
+            ))
         reason = _send_block_reason(
             draft, confirmation, sent_today_count(user.id), _sent_this_run,
-            _latest_send_at(user.id), now,
+            _latest_send_at(user.id), now, is_followup=is_followup,
+            dry_run=compliance.dry_run_enabled(user),
         )
         if reason:
             raise HTTPException(status_code=409, detail=reason)
@@ -732,7 +782,7 @@ def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depen
             response = GmailService(user.id).connect().send(
                 draft.contact.email,
                 draft.subject,
-                draft.body,
+                compliance.with_opt_out(draft.body, draft.contact, user.id),
                 resume,
                 sender_name=profile_service.profile_dict(user.id)["full_name"],
             )
@@ -765,13 +815,18 @@ def review_followup(event_id: int, user: User = Depends(get_current_user)):
     return {"ok": True}
 
 
+@app.post("/api/followups/run")
+def run_followups(user: User = Depends(get_current_user)):
+    return followup_service.run_once(owner_id=user.id)
+
+
 @app.post("/api/replies/sync")
 def sync_replies(user: User = Depends(get_current_user)):
     try:
-        count = sync_replies_best_effort(GmailService(user.id).connect(), user.id)
+        result = sync_inbox_best_effort(GmailService(user.id).connect(), user.id)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Reply sync failed: {exc}") from exc
-    return {"updated": count}
+        raise HTTPException(status_code=502, detail=f"Inbox sync failed: {exc}") from exc
+    return {"updated": result["matched"], **result}
 
 
 @app.post("/api/billing/checkout")
@@ -934,10 +989,13 @@ def get_settings(user: User = Depends(get_current_user)):
         "ai_provider": settings.ai_provider,
         "ai_model": settings.ai_model,
         "ai_base_url": settings.ai_base_url,
-        "dry_run": settings.dry_run,
+        "dry_run": compliance.dry_run_enabled(user),
         "max_emails_per_run": settings.max_emails_per_run,
         "max_emails_per_day": settings.max_emails_per_day,
         "min_seconds_between_emails": settings.min_seconds_between_emails,
+        "followup_auto_draft_enabled": settings.followup_auto_draft_enabled,
+        "followup_poll_seconds": settings.followup_poll_seconds,
+        "followup_max_per_run": settings.followup_max_per_run,
         "resume_name": profile["resume_name"],
         "onboarding": profile_service.onboarding_status(user.id),
         "hr_database_unlocked": billing_service.has_entitlement(user.id),
@@ -950,6 +1008,60 @@ def get_settings(user: User = Depends(get_current_user)):
         "gmail_expires_at": gmail_status["expires_at"],
         "gmail_needs_reconnect": gmail_status["needs_reconnect"],
     }
+
+
+@app.put("/api/settings/dry-run")
+def update_dry_run(payload: DryRunUpdate, user: User = Depends(get_current_user)):
+    with SessionLocal() as db:
+        current = db.get(User, user.id)
+        current.dry_run = payload.dry_run
+        db.commit()
+    audit_service.log(
+        user.id,
+        "DRY_RUN_ENABLED" if payload.dry_run else "DRY_RUN_DISABLED",
+        "Per-user dry-run mode updated from Settings.",
+    )
+    return {"dry_run": payload.dry_run}
+
+
+@app.get("/api/audit")
+def audit_log(limit: int = 100, user: User = Depends(get_current_user)):
+    return audit_service.list_logs(user.id, limit)
+
+
+def _unsubscribe_page(result):
+    if result["ok"]:
+        title = "You have been unsubscribed"
+        detail = (
+            f"{result['company_name']} ({result['email']}) will not receive further "
+            "emails from this JobReach AI workspace."
+        )
+        if result.get("already_opted_out"):
+            detail = "This address was already opted out. No further emails will be sent."
+    else:
+        title = "Unsubscribe link unavailable"
+        detail = result["message"]
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(title)} | JobReach AI</title>
+<style>
+body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#F7F9F7;color:#163025;font:15px/1.6 system-ui,sans-serif}}
+main{{width:min(560px,calc(100% - 32px));padding:32px;border:1px solid #DDE6DF;border-radius:18px;background:#fff;box-shadow:0 12px 40px rgba(22,48,37,.08)}}
+h1{{margin:0 0 8px;font-size:24px}}p{{margin:0;color:#5B6B62}}a{{color:#187B61}}
+</style></head>
+<body><main><h1>{html.escape(title)}</h1><p>{html.escape(detail)}</p>
+<p style="margin-top:18px"><a href="{html.escape(settings.frontend_url)}">Return to JobReach AI</a></p>
+</main></body></html>"""
+
+
+@app.get("/api/unsubscribe", response_class=HTMLResponse)
+def unsubscribe(token: str = ""):
+    return HTMLResponse(_unsubscribe_page(unsubscribe_contact(token)))
+
+
+@app.post("/api/unsubscribe")
+def unsubscribe_post(token: str = ""):
+    return unsubscribe_contact(token)
 
 
 @app.post("/api/settings/gmail")

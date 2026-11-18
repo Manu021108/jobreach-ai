@@ -5,11 +5,14 @@ A local-first, multi-user job outreach CRM built with FastAPI, React, SQLite, Gm
 ## Safety model
 
 - Emails are sent one recipient at a time. No CC/BCC bulk blast.
-- The campaign builder can generate drafts in batches, but each email is still reviewed, approved, queued, and sent individually.
+- The campaign builder generates drafts in batches. Automated sending starts only after you approve drafts, queue them, and explicitly start the campaign.
 - New contacts are imported as **Pending**; generated messages are **Draft** until explicitly approved.
-- `DRY_RUN=true` is the default. Sending is disabled until you deliberately set `DRY_RUN=false`.
-- Each send requires explicit approval, a reviewed-recipient checkbox, and typing the exact recipient address. A daily cap, per-run cap, and send interval are enforced by the API.
-- Follow-ups are reminders only; the app never automatically sends follow-up emails.
+- `DRY_RUN=true` is the global default. Each account can override it in Settings; if the account has no override, it inherits the global default. Manual and automated sending are disabled while the effective setting is on.
+- Manual sends require a reviewed-recipient checkbox and typing the exact recipient address. Automated sends use the same daily cap and minimum interval, plus retry backoff and per-campaign progress.
+- Due follow-ups are turned into drafts automatically, but follow-up drafts are never sent automatically. They still require approval and the normal send confirmation.
+- Every outreach email includes an unsubscribe footer. Unsubscribe links use signed tokens and mark the contact as opted out, blocking future sends. Gmail sends also include `List-Unsubscribe` headers when the footer link is present.
+- Gmail inbox sync matches possible replies and opt-outs into the dashboard. Matches are best-effort and should be verified manually.
+- Important actions are recorded in an in-app audit log. Privacy and Terms pages are available from the app and sign-in screen.
 - Only use relevant business contact addresses, personalize honestly, respect opt-outs, and stop contacting anyone who declines.
 - AI must only use facts supplied in the contact record/profile; it is instructed not to invent openings, company facts, relationships, or achievements.
 
@@ -71,9 +74,37 @@ Configure Stripe to send checkout events to `https://your-host/api/billing/webho
 
 For local development, Stripe CLI can forward signed events to `http://127.0.0.1:8000/api/billing/webhook`. Use the printed webhook signing secret for `STRIPE_WEBHOOK_SECRET`.
 
-## 3.3 Campaign builder
+## 3.3 Campaign builder and background sender
 
-The **Campaign & Send** page lets you select up to 50 eligible contacts, generate one AI draft per contact, approve drafts in bulk, and queue approved drafts. Queued drafts are not sent automatically: choose each draft in the review panel, preview the payload, confirm the recipient, and send it individually. Editing an approved draft resets it to **Draft** and requires re-approval.
+The **Campaign & Send** page lets you select up to 50 eligible contacts, generate one AI draft per contact, approve drafts in bulk, and queue approved drafts. **Start auto-send** begins a background worker that sends queued drafts one at a time. The worker enforces `MAX_EMAILS_PER_DAY`, `MIN_SECONDS_BETWEEN_EMAILS`, and retry backoff, and records per-campaign progress, attempts, and errors. It pauses automatically on the daily cap, Gmail/resume problems, or terminal send failures. You can pause a running campaign at any time. Editing an approved draft resets it to **Draft** and requires re-approval.
+
+Automated-send settings:
+
+- `AUTO_SEND_WORKER_ENABLED`: start the in-process worker with the API.
+- `AUTO_SEND_POLL_SECONDS`: how often the worker checks for due drafts.
+- `AUTO_SEND_MAX_ATTEMPTS`: maximum attempts per draft before it is marked failed.
+- `AUTO_SEND_RETRY_BACKOFF_SECONDS`: base delay for retries; each retry waits progressively longer.
+
+Follow-up settings:
+
+- `FOLLOWUP_AUTO_DRAFT_ENABLED`: automatically create a draft when a sent email's follow-up date is due.
+- `FOLLOWUP_POLL_SECONDS`: how often the follow-up worker checks for due reminders.
+- `FOLLOWUP_MAX_PER_RUN`: maximum follow-up drafts created per worker pass.
+
+The Follow-ups page and dashboard also provide **Sync inbox**, which matches replies and opt-outs from Gmail. Opt-out wording is detected best-effort; always verify the message before relying on it. Detected replies and opt-outs complete the open follow-up reminder so it no longer appears as due.
+
+## 3.4 Student dashboard
+
+The Overview page shows emails sent, opened, replied, opted out, and remaining daily quota. Gmail does not expose opens without a tracking pixel, so the Opened metric is shown as unavailable rather than estimated. The guardrails panel shows today's sent count against the daily cap, and **Sync inbox** refreshes reply and opt-out metrics.
+
+## 3.5 Safety and compliance
+
+- **Per-account dry-run:** Settings includes a dry-run toggle. A user with no override inherits the global `DRY_RUN` value; changing the setting affects that account only.
+- **Opt-out footer:** Manual sends, previews, and automated sends append a plain unsubscribe line with a signed link. Automated Gmail sends also add `List-Unsubscribe` and `List-Unsubscribe-Post` headers when the link is present.
+- **Unsubscribe handling:** `GET /api/unsubscribe?token=...` shows a confirmation page and records the opt-out. The contact is marked `OPTED_OUT`, open follow-up reminders are completed, and further sends are blocked.
+- **Public URL:** unsubscribe links use `FRONTEND_URL`. Before live sending, set it to a publicly reachable URL (HTTPS in production); otherwise recipients receive a localhost link.
+- **Audit log:** The Audit log page shows recent imports, drafts, approvals, sends, failures, status changes, replies, opt-outs, campaign starts/pauses, and dry-run changes. `GET /api/audit` returns up to 100 recent entries for the signed-in account.
+- **Legal pages:** Privacy and Terms are available from the app navigation, footer, and sign-in screen. They summarize data handling, Gmail access, AI drafting, user responsibilities, and outreach limits.
 
 ## 4. AI setup
 
@@ -130,10 +161,11 @@ A sample file is at `data/companies_template.csv`. `company_context` should cont
 2. Import a small, relevant contact list.
 3. Generate drafts for selected contacts.
 4. Review/edit each draft and mark it approved.
-5. Keep `DRY_RUN=true` and use Preview first.
-6. When ready, set `DRY_RUN=false` in `.env`, restart the API, and send a small approved batch.
-7. Use Follow-ups to set reminders. Follow-up reminders do not send automatically.
-8. Mark replies/opt-outs manually, or use the optional Gmail reply sync in the dashboard.
+5. Keep dry-run on and use Preview first. Confirm the unsubscribe footer is present.
+6. When ready, turn off dry-run in Settings for your account and send a small approved batch. Global `DRY_RUN=false` is only the fallback for accounts without an override.
+7. Use Follow-ups to review due reminders. Due follow-ups become drafts automatically, but they do not send automatically.
+8. Use **Sync inbox** on the dashboard or Follow-ups page to match replies and opt-outs, then verify the result in Gmail.
+9. Review the Audit log after imports, sends, and opt-outs to confirm what changed.
 
 ## 8. Data and operational notes
 
@@ -141,7 +173,9 @@ A sample file is at `data/companies_template.csv`. `company_context` should cont
 - Back up the database regularly; it contains per-user profiles, resumes, Gmail tokens, contacts, and outreach data.
 - Sending uses Gmail's `users.messages.send` API. Gmail API quotas and mailbox sending limits are separate; never treat a quota as a recommended outreach volume.
 - A successful API response means Gmail accepted the send request, not that the recipient's inbox received it.
-- Reply detection is best-effort and should be verified manually; email threading and aliases can complicate matching.
+- Reply and opt-out detection is best-effort and should be verified manually; email threading and aliases can complicate matching. Opt-outs are detected from common phrases in the reply subject/snippet and mark the contact as opted out.
+- Audit log entries are stored in the same database and are visible only to the owning account. They are operational records, not a substitute for provider-level compliance logs.
+- Unsubscribe tokens are signed with `AUTH_SECRET_KEY`; changing that key invalidates old unsubscribe links. Set a stable secret and rotate keys carefully.
 - The app does not scrape addresses, bypass spam controls, rotate accounts, or send automatically to unreviewed lists.
 
 ## 9. Tests
@@ -152,14 +186,14 @@ pytest -q
 
 ## 10. Deployment guidance
 
-Run locally for the first version. Do not expose this app publicly without HTTPS and a trusted-host configuration. For a shared deployment, replace SQLite with PostgreSQL, add role-based access, keep the token encryption key in a managed secret store, use a managed background worker/queue, implement audit logs and backups, and review Google's OAuth verification requirements.
+Run locally for the first version. Do not expose this app publicly without HTTPS and a trusted-host configuration. For a shared deployment, replace SQLite with PostgreSQL, add role-based access, keep the token encryption key in a managed secret store, use a managed background worker/queue, add verified backups and retention policies, and review Google's OAuth verification requirements. The in-app audit log is useful for operators but does not replace centralized security logging or provider compliance records.
 
 ## 11. Efficiency roadmap
 
-The current app is intentionally single-user and local-first. The most useful next steps, in order, are:
+The current app is local-first with per-user isolation. The most useful next steps, in order, are:
 
-1. Add server-side pagination and search for contacts and drafts; the current UI loads all records at once.
+1. Add server-side pagination and search for contacts, drafts, and audit entries; the current UI loads all records at once.
 2. Move slow AI generation and Gmail reply sync into a background task with visible progress and retryable failures.
 3. Add database migrations and scheduled, verified SQLite backups before changing the schema or scaling data volume.
-4. Add structured API/integration tests and import preview/validation so spreadsheet errors can be fixed before records are added.
-5. If multiple users or remote access become requirements, add authentication, per-user data isolation, PostgreSQL, encrypted credential storage, and audit history before deployment.
+4. Add import preview/validation so spreadsheet errors can be fixed before records are added.
+5. For public or larger deployments, add PostgreSQL, managed secrets, HTTPS, role-based access, centralized audit logging, and retention policies.
