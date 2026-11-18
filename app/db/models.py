@@ -9,6 +9,26 @@ def utcnow():
 class Base(DeclarativeBase):
     pass
 
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(500), nullable=False)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    verification_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verification_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reset_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reset_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    contacts: Mapped[list["Contact"]] = relationship(back_populates="user")
+    drafts: Mapped[list["EmailDraft"]] = relationship(back_populates="user")
+    jobs: Mapped[list["JobPosting"]] = relationship(back_populates="user")
+    events: Mapped[list["OutreachEvent"]] = relationship(back_populates="user")
+
+
 class Contact(Base):
     __tablename__ = "contacts"
     __table_args__ = (UniqueConstraint("email", "company_name", name="uq_contact_email_company"),)
@@ -25,8 +45,10 @@ class Contact(Base):
     website: Mapped[str] = mapped_column(String(500), default="")
     status: Mapped[str] = mapped_column(String(30), default="PENDING", index=True)
     opted_out: Mapped[bool] = mapped_column(Boolean, default=False)
+    owner_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    user: Mapped["User | None"] = relationship(back_populates="contacts")
     drafts: Mapped[list["EmailDraft"]] = relationship(back_populates="contact", cascade="all, delete-orphan")
     events: Mapped[list["OutreachEvent"]] = relationship(back_populates="contact", cascade="all, delete-orphan")
     jobs: Mapped[list["JobPosting"]] = relationship(back_populates="contact", cascade="all, delete-orphan")
@@ -49,8 +71,10 @@ class JobPosting(Base):
     match_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     match_reasons: Mapped[str] = mapped_column(Text, default="")
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    owner_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     contact: Mapped[Contact] = relationship(back_populates="jobs")
+    user: Mapped["User | None"] = relationship(back_populates="jobs")
 
 class EmailDraft(Base):
     __tablename__ = "email_drafts"
@@ -62,7 +86,9 @@ class EmailDraft(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    owner_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     contact: Mapped[Contact] = relationship(back_populates="drafts")
+    user: Mapped["User | None"] = relationship(back_populates="drafts")
 
 class OutreachEvent(Base):
     __tablename__ = "outreach_events"
@@ -76,4 +102,6 @@ class OutreachEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     followup_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    owner_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     contact: Mapped[Contact] = relationship(back_populates="events")
+    user: Mapped["User | None"] = relationship(back_populates="events")

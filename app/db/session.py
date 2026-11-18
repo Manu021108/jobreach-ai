@@ -11,8 +11,16 @@ def _ensure_columns():
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
     required = {
-        "contacts": {"website": "ALTER TABLE contacts ADD COLUMN website VARCHAR(500) DEFAULT ''"},
-        "email_drafts": {"job_id": "ALTER TABLE email_drafts ADD COLUMN job_id INTEGER"},
+        "contacts": {
+            "website": "ALTER TABLE contacts ADD COLUMN website VARCHAR(500) DEFAULT ''",
+            "owner_id": "ALTER TABLE contacts ADD COLUMN owner_id INTEGER",
+        },
+        "email_drafts": {
+            "job_id": "ALTER TABLE email_drafts ADD COLUMN job_id INTEGER",
+            "owner_id": "ALTER TABLE email_drafts ADD COLUMN owner_id INTEGER",
+        },
+        "job_postings": {"owner_id": "ALTER TABLE job_postings ADD COLUMN owner_id INTEGER"},
+        "outreach_events": {"owner_id": "ALTER TABLE outreach_events ADD COLUMN owner_id INTEGER"},
     }
     for table, columns in required.items():
         if table not in tables:

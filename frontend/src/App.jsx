@@ -37,13 +37,14 @@ const icons = {
   shield: <svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7l8-4z"/></svg>,
   arrow: <svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 5l7 7-7 7"/></svg>,
   x: <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>,
+  logout: <svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M13 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/></svg>,
   file: <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>,
 };
 
 function Icon({ name }) { return <span className="nav-icon" aria-hidden="true">{icons[name]}</span>; }
 
 async function api(path, options = {}) {
-  const response = await fetch(`/api${path}`, options);
+  const response = await fetch(`/api${path}`, { credentials: "include", ...options });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`);
   return data;
@@ -60,6 +61,152 @@ function Badge({ children }) {
   return <span className={`badge badge-${String(children).toLowerCase().replaceAll("_", "-")}`}>{children}</span>;
 }
 
+const authModes = [
+  { id: "login", label: "Sign in" },
+  { id: "register", label: "Register" },
+  { id: "reset", label: "Reset" },
+];
+
+function Auth({ onAuthenticated, initialMode = "login", initialToken = "" }) {
+  const [mode, setMode] = useState(initialMode);
+  const [form, setForm] = useState({ name: "", email: "", password: "", token: initialToken });
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const setField = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
+  const jsonPost = (path, body) => api(path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true); setError(""); setMessage("");
+    try {
+      if (mode === "register") {
+        const result = await jsonPost("/auth/register", { name: form.name, email: form.email, password: form.password });
+        if (result.dev_verification_token) sessionStorage.setItem("jr_verification_token", result.dev_verification_token);
+        setMode("login");
+        setMessage(result.dev_verification_token
+          ? `Account created. Sign in, then verify with token ${result.dev_verification_token}.`
+          : "Account created. Sign in to continue verification.");
+      } else if (mode === "login") {
+        onAuthenticated(await jsonPost("/auth/login", { email: form.email, password: form.password }));
+      } else if (mode === "reset") {
+        const result = await jsonPost("/auth/reset-request", { email: form.email });
+        setForm((current) => ({ ...current, token: result.dev_reset_token || "" }));
+        setMode("reset-confirm");
+        setMessage(result.dev_reset_token ? `Your password reset token is ${result.dev_reset_token}` : result.message);
+      } else {
+        const result = await jsonPost("/auth/reset-confirm", { token: form.token, password: form.password });
+        setMode("login"); setMessage(result.message);
+      }
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="auth-shell">
+      <form className="auth-card" onSubmit={submit}>
+        <div className="brand-mark auth-mark">JR</div>
+        <h1 className="auth-title">Welcome to JobReach AI</h1>
+        <p className="auth-subtitle">Create a student account, verify your email, and start matching real openings.</p>
+        <div className="auth-tabs">
+          {authModes.map((item) => (
+            <button key={item.id} type="button" className={`auth-tab ${mode === item.id || (item.id === "reset" && mode === "reset-confirm") ? "active" : ""}`} onClick={() => { setMode(item.id); setError(""); setMessage(""); }}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+        {message && <div className="auth-message">{message}</div>}
+        {error && <div className="alert alert-error" role="alert"><span>!</span><p>{error}</p></div>}
+        {mode === "register" && (
+          <>
+            <label className="field-label">Full name</label>
+            <input value={form.name} onChange={setField("name")} autoComplete="name" required />
+          </>
+        )}
+        {(mode === "login" || mode === "register" || mode === "reset") && (
+          <>
+            <label className="field-label">Email</label>
+            <input type="email" value={form.email} onChange={setField("email")} autoComplete="email" required />
+          </>
+        )}
+        {(mode === "login" || mode === "register" || mode === "reset-confirm") && (
+          <>
+            <label className="field-label">{mode === "reset-confirm" ? "New password" : "Password"}</label>
+            <input type="password" value={form.password} onChange={setField("password")} autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} required />
+          </>
+        )}
+        {mode === "reset-confirm" && (
+          <>
+            <label className="field-label">Reset token</label>
+            <input value={form.token} onChange={setField("token")} required />
+          </>
+        )}
+        <button className="button button-primary full-button auth-submit" disabled={busy} type="submit">
+          {busy ? <><span className="spinner" /> Working…</> : mode === "login" ? "Sign in" : mode === "register" ? "Create account" : mode === "reset" ? "Send reset link" : "Set new password"}
+        </button>
+        {mode === "login" && <button className="button button-ghost full-button" type="button" onClick={() => { setMode("reset"); setError(""); setMessage(""); }}>Forgot password?</button>}
+        <p className="auth-footnote">Local workspace · Your data stays on this device</p>
+      </form>
+    </div>
+  );
+}
+
+function VerificationPanel({ user, initialToken = "", onVerified }) {
+  const [token, setToken] = useState(initialToken || sessionStorage.getItem("jr_verification_token") || "");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const post = (path, body) => api(path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+
+  const verify = async (event) => {
+    event.preventDefault();
+    setBusy(true); setError(""); setMessage("");
+    try {
+      await post("/auth/verify-email", { token });
+      sessionStorage.removeItem("jr_verification_token");
+      onVerified(await api("/auth/me"));
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const resend = async () => {
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const result = await post("/auth/resend-verification", { email: user.email });
+      if (result.dev_verification_token) {
+        setToken(result.dev_verification_token);
+        sessionStorage.setItem("jr_verification_token", result.dev_verification_token);
+        setMessage(`New verification token: ${result.dev_verification_token}`);
+      } else setMessage(result.message);
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="auth-shell">
+      <form className="auth-card" onSubmit={verify}>
+        <div className="brand-mark auth-mark">JR</div>
+        <h1 className="auth-title">Verify your email</h1>
+        <p className="auth-subtitle">Signed in as <strong>{user.email}</strong>. Verify your student email to unlock the workspace.</p>
+        {message && <div className="auth-message">{message}</div>}
+        {error && <div className="alert alert-error" role="alert"><span>!</span><p>{error}</p></div>}
+        <label className="field-label">Verification token</label>
+        <input value={token} onChange={(event) => setToken(event.target.value)} required />
+        <button className="button button-primary full-button auth-submit" disabled={busy} type="submit">
+          {busy ? <><span className="spinner" /> Working…</> : "Verify email"}
+        </button>
+        <button className="button button-ghost full-button" type="button" disabled={busy} onClick={resend}>Resend verification link</button>
+        <button className="button button-ghost full-button" type="button" onClick={async () => { await api("/auth/logout", { method: "POST" }); onVerified(null); }}>Sign out</button>
+      </form>
+    </div>
+  );
+}
+
 function App() {
   const [page, setPage] = useState("overview");
   const [dashboard, setDashboard] = useState(null);
@@ -70,6 +217,20 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState("");
+  const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const query = new URLSearchParams(window.location.search);
+  const authStart = {
+    mode: query.get("reset") ? "reset-confirm" : "login",
+    token: query.get("verify") || query.get("reset") || "",
+  };
+
+  useEffect(() => {
+    api("/auth/me")
+      .then(setUser)
+      .catch(() => setUser(null))
+      .finally(() => setAuthReady(true));
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -85,7 +246,38 @@ function App() {
     } catch (e) { setError(e.message); }
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { if (user) refresh(); }, [user, refresh]);
+
+  const signOut = async () => {
+    try { await api("/auth/logout", { method: "POST" }); } catch { /* ignore */ }
+    setUser(null); setDashboard(null); setContacts([]); setDrafts([]); setFollowups([]); setSettings(null);
+  };
+
+  if (!authReady) return <div className="auth-loading">Loading JobReach AI…</div>;
+  if (!user) {
+    return (
+      <Auth
+        initialMode={authStart.mode}
+        initialToken={authStart.token}
+        onAuthenticated={(next) => {
+          window.history.replaceState({}, document.title, window.location.pathname);
+          setUser(next);
+        }}
+      />
+    );
+  }
+  if (!user.is_verified) {
+    return (
+      <VerificationPanel
+        user={user}
+        initialToken={authStart.token}
+        onVerified={(next) => {
+          window.history.replaceState({}, document.title, window.location.pathname);
+          setUser(next);
+        }}
+      />
+    );
+  }
 
   const run = async (operation, successMessage, thenRefresh = true) => {
     setBusy(true); setError(""); setNotice(null);
@@ -127,10 +319,10 @@ function App() {
             <p>{settings?.dry_run ? "Emails are preview-only. Nothing can be sent." : "Sending is enabled. Every send requires your approval."}</p>
           </div>
           <div className="user-chip">
-            <div className="avatar">{settings?.sender_name?.charAt(0) || "J"}</div>
+            <div className="avatar">{user.name?.charAt(0) || "J"}</div>
             <div className="user-meta">
-              <strong>{settings?.sender_name || "Your profile"}</strong>
-              <small>{settings?.sender_email || "Configure sender settings"}</small>
+              <strong>{user.name}</strong>
+              <small>{user.email}</small>
             </div>
           </div>
         </div>
@@ -141,6 +333,7 @@ function App() {
           <div className="breadcrumbs"><span>Workspace</span><b>/</b><strong>{selectedPage?.label}</strong></div>
           <div className="top-actions">
             <span className="local-indicator"><i /> <span>Local workspace</span></span>
+            <button className="icon-button" title="Sign out" aria-label="Sign out" onClick={signOut}><Icon name="logout" /></button>
             <button className="icon-button" title="Refresh data" aria-label="Refresh data" onClick={refresh}><Icon name="refresh" /></button>
           </div>
         </header>

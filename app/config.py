@@ -31,6 +31,19 @@ class Settings(BaseSettings):
     min_seconds_between_emails: int = Field(default=45, ge=10, le=3600)
     max_emails_per_day: int = Field(default=20, ge=1, le=100)
     followup_default_days: int = Field(default=7, ge=2, le=30)
+    auth_secret_key: str = ""
+    auth_session_days: int = Field(default=7, ge=1, le=30)
+    auth_cookie_secure: bool = False
+    verification_token_hours: int = Field(default=24, ge=1, le=168)
+    reset_token_hours: int = Field(default=1, ge=1, le=24)
+    auth_dev_tokens: bool = True
+    frontend_url: str = "http://127.0.0.1:8000"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
 
     @property
     def root(self) -> Path:
