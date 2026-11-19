@@ -29,6 +29,7 @@ from app.services import campaign as campaign_service
 from app.services import compliance
 from app.services import followups as followup_service
 from app.services import gmail_service, gmail_tokens, hr_database, job_alerts, profile_service
+from app.services import worker as worker_manager
 from app.services import job_discovery_engine, job_discovery_worker
 from app.services.ai_writer import AIWriter
 from app.services.gmail_service import GmailService
@@ -73,18 +74,16 @@ from app.services.outreach import (
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    init_db()
-    if settings.auto_send_worker_enabled:
-        auto_sender.start_worker()
-    if settings.followup_auto_draft_enabled:
-        followup_service.start_worker()
-    job_discovery_worker.start_worker()
     try:
+        init_db()
+        if settings.auto_send_worker_enabled:
+            auto_sender.start_worker()
+        if settings.followup_auto_draft_enabled:
+            followup_service.start_worker()
+        job_discovery_worker.start_worker()
         yield
     finally:
-        job_discovery_worker.stop_worker()
-        followup_service.stop_worker()
-        auto_sender.stop_worker()
+        worker_manager.stop_worker()
 
 
 app = FastAPI(title="JobReach AI", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -951,8 +950,11 @@ def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depen
         )
         if reason:
             raise HTTPException(status_code=409, detail=reason)
+        if campaign_service.claim_for_send(draft.id, user.id, now=now) is False:
+            raise HTTPException(status_code=409, detail="This draft is already being sent. Try again shortly.")
         resume = _send_resume_path(user)
         if not resume:
+            campaign_service.release_send_claim(draft.id, user.id, "APPROVED", now=now)
             raise HTTPException(status_code=409, detail="Upload a PDF resume during onboarding or in Settings before sending.")
         try:
             response = GmailService(user.id).connect().send(
@@ -962,11 +964,8 @@ def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depen
                 resume,
                 sender_name=profile_service.profile_dict(user.id)["full_name"],
             )
-            mark_sent(draft.id, response.get("id", ""), response.get("threadId", ""), owner_id=user.id)
-            campaign_service.sync_draft_state(draft.id, user.id, "SENT")
-            _sent_this_run += 1
         except Exception as exc:
-            campaign_service.sync_draft_state(draft.id, user.id, "FAILED")
+            campaign_service.release_send_claim(draft.id, user.id, "FAILED", now=now)
             record_failed(draft.id, exc, user.id)
             raise HTTPException(
                 status_code=502,
@@ -974,6 +973,15 @@ def send_draft(draft_id: int, confirmation: SendConfirmation, user: User = Depen
             ) from exc
         finally:
             resume.unlink(missing_ok=True)
+        try:
+            mark_sent(draft.id, response.get("id", ""), response.get("threadId", ""), owner_id=user.id)
+            campaign_service.finalize_send(draft.id, user.id, now=now)
+            _sent_this_run += 1
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gmail accepted the send but progress could not be recorded: {exc}. Check Gmail Sent before retrying.",
+            ) from exc
     return {"ok": True, "message": "Gmail accepted the message send request."}
 
 

@@ -339,3 +339,103 @@ END OF PLAN -- REQUEST FOR REVIEW
 Please approve or edit sections 3 (scope), 8 (minimum checklist), 11 (open
 decisions), and 12 (timeline). Implementation should not start until D1-D5 and
 D7 are answered, because they change the data model and infrastructure.
+
+As a high-skilled product developer, I have reviewed the jobreach-ai project
+  codebase. Below is a report of the critical issues identified and a roadmap for
+  future developments.
+
+  Project Overview
+
+  JobReach AI is a local-first, FastAPI + React CRM designed for personalized job
+  outreach. The current state is highly functional as a local prototype but requires
+  significant work to transition into a robust, multi-user product.
+
+  1. Critical Issues & Technical Debt
+
+  Security & Compliance
+
+  - Plaintext Credentials & Tokens: The credentials/ folder contains sensitive
+    token.json and client secret JSON files. These are not git-ignored (although they
+    should be) and represent a significant security risk if the repository were ever
+    shared or pushed.
+  - Database Exposure: The SQLite file (data/jobreach.db) is used for storage. While
+    efficient for local development, it is unsafe for multi-user web hosting and lacks
+    the concurrency and security features of PostgreSQL.
+  - Lack of Auth Robustness: The current implementation uses a single, shared
+    AUTH_SECRET_KEY and does not fully leverage secure, server-side encrypted storage
+    for sensitive data outside of the database column encryption.
+  - Dry Run Defaults: The project correctly defaults to DRY_RUN=true, but managing this
+    via environment variables makes it easy to accidentally misconfigure in a
+    production deployment.
+
+  Backend Engineering
+
+  - Worker/Task Management: The application relies on threading for background workers
+    (job_discovery_worker.py, followup_service.py). This is prone to race conditions,
+    zombie threads, and lack of persistence. A robust task queue like Celery, ARQ, or
+    Dramatiq with Redis is necessary for production.
+  - Scaling & Concurrency: The use of SQLite with multiple threads requires careful
+    locking. Under higher loads, this will cause database locks and bottlenecks.
+  - Error Handling: Many services perform IO operations (Gmail API, AI API) with broad
+    try/except blocks that may mask root causes or lead to "uncertain" states (e.g.,
+    Gmail accepted a request but the status was never updated in the DB).
+
+  Frontend & UI
+
+  - Single-Page Application (SPA) Routing: The frontend routing relies heavily on
+    client-side state, which is fine for a small tool but needs to ensure strict route
+    protection to prevent unauthorized access to API endpoints if the user manually
+    tries to navigate.
+  - Data Consistency: The frontend relies on a single WorkspaceContext that fetches
+    everything on load. For 5,000+ contacts, this will cause significant performance
+    lag. Pagination and server-side filtering are required.
+
+  2. Recommended Roadmap for Future Development
+
+  Phase 1: Productization & Scalability (Immediate Priority)
+
+  - Database Migration: Migrate from SQLite to PostgreSQL. This is non-negotiable for a
+    multi-user environment.
+  - Task Queue Implementation: Replace internal Python threads with Redis-based tasks
+    (Celery/ARQ) for all asynchronous operations (email sending, AI generation, inbox
+    sync).
+  - Server-Side Pagination: Implement robust server-side search and pagination for the
+    contact database (HR Database) and campaign views to keep the UI snappy as records
+    grow.
+  - Asset Storage: Shift from local storage (or database blobs) to object storage (S3)
+    for resumes and file attachments.
+
+  Phase 2: Feature Expansion
+
+  - Automated Resume Parsing: Integrate a PDF parser (e.g., PyMuPDF or pdfplumber) in
+    the backend to extract skills and experience from the uploaded PDF. Use this to
+    automatically augment the student's profile for the AI writer, reducing the manual
+    setup time.
+  - Advanced AI Matching: Move beyond simple keyword matching to semantic search using
+    vector embeddings (e.g., via pgvector or an external vector store) to better align
+    candidate resumes with job descriptions.
+  - Deliverability & Analytics: Add detailed bounce handling, open-rate tracking (via
+    standard pixel integration), and domain reputation monitoring to help users stay
+    out of spam folders.
+
+  Phase 3: Platform Features
+
+  - Team/School Accounts: Add an organization entity to allow career cells to manage
+    batches of students, track collective placement statistics, and provide curated
+    contact lists to their students.
+  - Advanced Integrations: Direct ATS integration (e.g., syncing application status
+    from Workday/Greenhouse) would be a game-changer for users.
+
+  ---
+
+  How to apply this report
+
+  - Security: Immediately add credentials/ and data/*.db to your .gitignore and rotate
+    any leaked secrets.
+  - Data: Start prototyping a PostgreSQL migration and test it using a staging
+    environment.
+  - UX: Prioritize implementing server-side pagination for the "Companies" table; as
+    you scale toward 5,000+ contacts, the current frontend state approach will fail.
+
+  I have not made any code changes, but I recommend prioritizing the database migration
+  and the transition to a formal task queue before attempting to scale the user base.

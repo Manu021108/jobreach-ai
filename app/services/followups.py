@@ -1,5 +1,3 @@
-import logging
-import threading
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -9,12 +7,7 @@ from app.config import settings
 from app.db.models import EmailDraft, OutreachEvent
 from app.db.session import SessionLocal
 from app.services import profile_service
-
-
-logger = logging.getLogger(__name__)
-_stop_event = threading.Event()
-_thread = None
-_thread_lock = threading.Lock()
+from app.services import worker as worker_manager
 
 
 def _followup_subject(original):
@@ -94,30 +87,17 @@ def run_once(now=None, owner_id=None):
     return {"generated": generated, "skipped": skipped}
 
 
-def _loop():
-    while not _stop_event.is_set():
-        try:
-            run_once()
-        except Exception:
-            logger.exception("Follow-up worker failed")
-        _stop_event.wait(max(1, settings.followup_poll_seconds))
-
-
 def start_worker():
-    global _thread
-    with _thread_lock:
-        if _thread and _thread.is_alive():
-            return
-        _stop_event.clear()
-        _thread = threading.Thread(target=_loop, name="jobreach-followup-worker", daemon=True)
-        _thread.start()
+    """Register and start the recurring follow-up draft job."""
+    worker_manager.worker.register(
+        "followups",
+        run_once,
+        settings.followup_poll_seconds,
+        description="Create due follow-up drafts",
+    )
+    worker_manager.start_worker()
 
 
 def stop_worker():
-    global _thread
-    with _thread_lock:
-        thread = _thread
-        _thread = None
-    _stop_event.set()
-    if thread:
-        thread.join(timeout=5)
+    """Stop the shared worker scheduler (idempotent)."""
+    worker_manager.stop_worker()

@@ -84,6 +84,7 @@ Automated-send settings:
 - `AUTO_SEND_POLL_SECONDS`: how often the worker checks for due drafts.
 - `AUTO_SEND_MAX_ATTEMPTS`: maximum attempts per draft before it is marked failed.
 - `AUTO_SEND_RETRY_BACKOFF_SECONDS`: base delay for retries; each retry waits progressively longer.
+- `AUTO_SEND_SEND_LEASE_SECONDS`: how long a reserved send is considered active before it is reconciled against Gmail Sent.
 
 Follow-up settings:
 

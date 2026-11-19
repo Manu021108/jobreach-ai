@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import joinedload
 
 from app.db.models import Campaign, CampaignContact, Contact
@@ -10,6 +10,7 @@ from app.services.outreach import approve_draft, save_draft
 
 
 BLOCKED_STATUSES = {"SENT", "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED"}
+CLAIMABLE_STATES = {"QUEUED", "APPROVED"}
 
 
 def _iso(value):
@@ -209,6 +210,108 @@ def queue_campaign(campaign_id, owner_id):
         return {"queued": queued}
 
 
+def claim_for_send(draft_id, owner_id, now=None, allowed_states=None):
+    """Atomically reserve a campaign entry for an external send.
+
+    Returns ``None`` when the draft is not part of a campaign, ``True`` when
+    the reservation was claimed, and ``False`` when another sender owns it.
+    """
+    now = now or datetime.now(timezone.utc)
+    states = set(allowed_states or CLAIMABLE_STATES)
+    with SessionLocal() as db:
+        entry = db.scalar(
+            select(CampaignContact)
+            .join(Campaign)
+            .where(CampaignContact.draft_id == int(draft_id), Campaign.user_id == int(owner_id))
+        )
+        if not entry:
+            return None
+        owned_campaigns = select(Campaign.id).where(Campaign.user_id == int(owner_id))
+        result = db.execute(
+            update(CampaignContact)
+            .where(
+                CampaignContact.id == entry.id,
+                CampaignContact.campaign_id.in_(owned_campaigns),
+                CampaignContact.state.in_(states),
+            )
+            .values(state="SENDING", reserved_at=now)
+        )
+        db.commit()
+        return result.rowcount == 1
+
+
+def release_send_claim(draft_id, owner_id, state, now=None):
+    now = now or datetime.now(timezone.utc)
+    if state not in {"DRAFT", "GENERATED", "APPROVED", "QUEUED", "FAILED"}:
+        raise ValueError(f"Unsupported release state: {state}")
+    values = {"state": state, "reserved_at": None}
+    if state == "QUEUED":
+        values["scheduled_at"] = now
+    elif state == "FAILED":
+        values["scheduled_at"] = None
+    with SessionLocal() as db:
+        entry = db.scalar(
+            select(CampaignContact)
+            .join(Campaign)
+            .where(CampaignContact.draft_id == int(draft_id), Campaign.user_id == int(owner_id))
+        )
+        if not entry:
+            return False
+        result = db.execute(
+            update(CampaignContact)
+            .where(CampaignContact.id == entry.id, CampaignContact.state == "SENDING")
+            .values(**values)
+        )
+        if state in {"DRAFT", "GENERATED"}:
+            campaign = db.get(Campaign, entry.campaign_id)
+            if campaign and campaign.status in {"QUEUED", "COMPLETED"}:
+                campaign.status = "DRAFT"
+        db.commit()
+        return result.rowcount == 1
+
+
+def finalize_send(draft_id, owner_id, now=None):
+    now = now or datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        entry = db.scalar(
+            select(CampaignContact)
+            .join(Campaign)
+            .where(CampaignContact.draft_id == int(draft_id), Campaign.user_id == int(owner_id))
+        )
+        if not entry:
+            return False
+        owned_campaigns = select(Campaign.id).where(Campaign.user_id == int(owner_id))
+        result = db.execute(
+            update(CampaignContact)
+            .where(
+                CampaignContact.id == entry.id,
+                CampaignContact.campaign_id.in_(owned_campaigns),
+                CampaignContact.state == "SENDING",
+            )
+            .values(
+                state="SENT",
+                sent_at=now,
+                reserved_at=None,
+                error="",
+                attempts=CampaignContact.attempts + 1,
+            )
+        )
+        if result.rowcount != 1:
+            db.commit()
+            return False
+        pending = db.scalar(
+            select(CampaignContact.id).where(
+                CampaignContact.campaign_id == entry.campaign_id,
+                CampaignContact.state != "SENT",
+            )
+        )
+        campaign = db.get(Campaign, entry.campaign_id)
+        if campaign and not pending:
+            campaign.status = "COMPLETED"
+        db.commit()
+        return True
+
+
 def sync_draft_state(draft_id, owner_id, state):
     with SessionLocal() as db:
         entry = db.scalar(
@@ -217,19 +320,14 @@ def sync_draft_state(draft_id, owner_id, state):
             .where(CampaignContact.draft_id == int(draft_id), Campaign.user_id == int(owner_id))
         )
         if not entry:
-            return
+            return False
         entry.state = state
         if state == "SENT":
             entry.sent_at = datetime.now(timezone.utc)
             entry.attempts += 1
         db.flush()
-        pending = db.scalar(
-            select(CampaignContact)
-            .where(CampaignContact.campaign_id == entry.campaign_id, CampaignContact.state != "SENT")
-        )
         campaign = db.get(Campaign, entry.campaign_id)
-        if campaign and state == "SENT" and not pending:
-            campaign.status = "COMPLETED"
-        elif campaign and state in {"DRAFT", "GENERATED", "FAILED"} and campaign.status in {"QUEUED", "COMPLETED"}:
+        if campaign and state in {"DRAFT", "GENERATED"} and campaign.status in {"QUEUED", "COMPLETED"}:
             campaign.status = "DRAFT"
         db.commit()
+        return True

@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     auto_send_poll_seconds: int = Field(default=5, ge=1, le=60)
     auto_send_max_attempts: int = Field(default=3, ge=1, le=10)
     auto_send_retry_backoff_seconds: int = Field(default=300, ge=10, le=3600)
+    auto_send_send_lease_seconds: int = Field(default=900, ge=60, le=3600)
     followup_default_days: int = Field(default=7, ge=2, le=30)
     followup_auto_draft_enabled: bool = True
     followup_poll_seconds: int = Field(default=60, ge=10, le=3600)

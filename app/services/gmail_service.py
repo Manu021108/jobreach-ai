@@ -96,6 +96,23 @@ class GmailService:
             .get("messages", [])
         )
 
+    def find_sent_message(self, recipient, subject, since=None):
+        if not self.service:
+            self.connect()
+        query = f"in:sent to:{recipient}"
+        if subject:
+            escaped = str(subject).replace("\\", "\\\\").replace('"', '\\"')
+            query += f' subject:"{escaped}"'
+        if since:
+            query += f" after:{max(0, int(since.timestamp()) - 60)}"
+        return bool(
+            self.service.users()
+            .messages()
+            .list(userId="me", q=query, maxResults=10)
+            .execute()
+            .get("messages", [])
+        )
+
     def get_message(self, message_id):
         if not self.service:
             self.connect()

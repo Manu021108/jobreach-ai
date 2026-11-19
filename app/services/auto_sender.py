@@ -1,11 +1,10 @@
 import logging
 import tempfile
-import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from googleapiclient.errors import HttpError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import joinedload
 
 from app.config import settings
@@ -13,15 +12,13 @@ from app.db.models import Campaign, CampaignContact, EmailDraft, OutreachEvent, 
 from app.db.session import SessionLocal
 from app.services import audit, campaign as campaign_service
 from app.services import compliance, gmail_tokens, profile_service
+from app.services import worker as worker_manager
 from app.services.gmail_service import GmailService
 from app.services.outreach import latest_sent_at, mark_sent, sent_today_count
 
 
 logger = logging.getLogger(__name__)
 BLOCKED_STATUSES = {"SENT", "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED"}
-_stop_event = threading.Event()
-_thread = None
-_thread_lock = threading.Lock()
 
 
 def _as_utc(value):
@@ -65,12 +62,21 @@ def _is_retryable(exc):
 def _handle_failure(entry_id, owner_id, exc, now):
     retryable = _is_retryable(exc)
     with SessionLocal() as db:
-        entry = db.get(CampaignContact, int(entry_id))
+        entry = db.scalar(
+            select(CampaignContact)
+            .join(Campaign)
+            .where(
+                CampaignContact.id == int(entry_id),
+                Campaign.user_id == int(owner_id),
+                CampaignContact.state == "SENDING",
+            )
+        )
         if not entry:
-            return "failed"
+            return "idle"
         entry.attempts += 1
         entry.last_attempt_at = now
         entry.error = str(exc)[:500]
+        entry.reserved_at = None
         contact_id = entry.contact_id
         attempts = entry.attempts
         campaign = db.get(Campaign, entry.campaign_id)
@@ -186,8 +192,91 @@ def pause_campaign(campaign_id, owner_id):
     return {"status": "PAUSED", "message": "Automated sending paused."}
 
 
+def _gmail_send_exists(owner_id, recipient, subject, since):
+    return GmailService(owner_id).connect().find_sent_message(recipient, subject, since)
+
+
+def _finalize_sent(draft_id, owner_id, now, message_id="", thread_id=""):
+    with SessionLocal() as db:
+        draft = db.get(EmailDraft, int(draft_id))
+        already_sent = bool(draft and draft.status == "SENT")
+    if not already_sent:
+        mark_sent(draft_id, message_id, thread_id, owner_id=owner_id)
+    campaign_service.finalize_send(draft_id, owner_id, now=now)
+
+
+def reconcile_stale_sending(owner_id, now=None, reconcile=None):
+    """Recover SENDING entries whose send lease has expired.
+
+    ``reconcile`` is an optional callable
+    ``(draft_id, recipient, subject, reserved_at) -> bool | None``. When it
+    returns ``None``, or Gmail cannot be checked, the entry stays SENDING and
+    the campaign is paused for manual verification instead of being retried.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=settings.auto_send_send_lease_seconds)
+    with SessionLocal() as db:
+        entries = list(db.scalars(
+            select(CampaignContact)
+            .join(Campaign)
+            .options(joinedload(CampaignContact.contact), joinedload(CampaignContact.draft))
+            .where(
+                CampaignContact.state == "SENDING",
+                Campaign.status == "RUNNING",
+                or_(
+                    CampaignContact.reserved_at.is_(None),
+                    CampaignContact.reserved_at <= cutoff,
+                ),
+            )
+        ).all())
+        snapshots = [
+            (entry.draft_id, entry.contact.email, entry.draft.subject, entry.reserved_at)
+            for entry in entries
+            if entry.contact and entry.draft
+        ]
+
+    reconciled = 0
+    for draft_id, recipient, subject, reserved_at in snapshots:
+        if reconcile is not None:
+            try:
+                result = reconcile(draft_id, recipient, subject, reserved_at)
+                sent = None if result is None else bool(result)
+            except Exception:
+                sent = None
+        else:
+            try:
+                sent = _gmail_send_exists(owner_id, recipient, subject, reserved_at or cutoff)
+            except Exception:
+                logger.exception("Could not verify stale send for draft %s", draft_id)
+                sent = None
+        if sent is None:
+            pause_user_campaigns(
+                owner_id,
+                "A send is in an uncertain state. Check Gmail Sent before resuming the campaign.",
+                now,
+            )
+            continue
+        if sent is True:
+            _finalize_sent(draft_id, owner_id, now)
+        else:
+            campaign_service.release_send_claim(draft_id, owner_id, "QUEUED", now=now)
+        reconciled += 1
+    return reconciled
+
+
 def run_once(now=None):
     now = now or datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        owner_ids = list(db.scalars(
+            select(Campaign.user_id).where(Campaign.status == "RUNNING")
+        ).all())
+    for owner_id in owner_ids:
+        try:
+            reconcile_stale_sending(owner_id, now=now)
+        except Exception:
+            logger.exception("Could not reconcile stale SENDING entries for user %s", owner_id)
+
+    lease_cutoff = now - timedelta(seconds=settings.auto_send_send_lease_seconds)
     with SessionLocal() as db:
         campaigns = list(db.scalars(
             select(Campaign)
@@ -206,6 +295,30 @@ def run_once(now=None):
                 campaign.paused_at = now
                 campaign.last_error = "Dry-run is enabled. Turn it off in Settings to resume automated sending."
                 changed = True
+                continue
+            stale_sending = db.scalar(
+                select(func.count(CampaignContact.id)).where(
+                    CampaignContact.campaign_id == campaign.id,
+                    CampaignContact.state == "SENDING",
+                    or_(
+                        CampaignContact.reserved_at.is_(None),
+                        CampaignContact.reserved_at <= lease_cutoff,
+                    ),
+                )
+            ) or 0
+            if stale_sending:
+                campaign.status = "PAUSED"
+                campaign.paused_at = now
+                campaign.last_error = "An automated send is in an uncertain state. Check Gmail Sent before resuming."
+                changed = True
+                continue
+            active_sending = db.scalar(
+                select(func.count(CampaignContact.id)).where(
+                    CampaignContact.campaign_id == campaign.id,
+                    CampaignContact.state == "SENDING",
+                )
+            ) or 0
+            if active_sending:
                 continue
             entries = list(db.scalars(
                 select(CampaignContact)
@@ -294,11 +407,27 @@ def run_once(now=None):
             return _result("idle")
 
     try:
+        claimed = campaign_service.claim_for_send(
+            draft_id, owner_id, now=now, allowed_states={"QUEUED"}
+        )
+    except Exception as exc:
+        logger.exception("Could not reserve SENDING state for entry %s", entry_id)
+        pause_user_campaigns(
+            owner_id,
+            f"Could not reserve the draft for sending: {exc}. Check the campaign before resuming.",
+            now,
+        )
+        return _result("paused", message=str(exc)[:200])
+    if not claimed:
+        return _result("idle")
+
+    try:
         resume = _resume_tempfile(owner_id)
     except Exception as exc:
         _handle_failure(entry_id, owner_id, exc, now)
         return _result("failed", failed=1, message=str(exc)[:200])
     if not resume:
+        campaign_service.release_send_claim(draft_id, owner_id, "QUEUED", now=now)
         pause_user_campaigns(owner_id, "Upload a PDF resume before automated sending.", now)
         return _result("paused", message="Upload a PDF resume before automated sending.")
 
@@ -323,8 +452,13 @@ def run_once(now=None):
     resume.unlink(missing_ok=True)
 
     try:
-        mark_sent(draft_id, response.get("id", ""), response.get("threadId", ""), owner_id=owner_id)
-        campaign_service.sync_draft_state(draft_id, owner_id, "SENT")
+        _finalize_sent(
+            draft_id,
+            owner_id,
+            now,
+            message_id=response.get("id", ""),
+            thread_id=response.get("threadId", ""),
+        )
     except Exception as exc:
         logger.exception("Auto-send was accepted but progress could not be recorded")
         pause_user_campaigns(
@@ -336,30 +470,17 @@ def run_once(now=None):
     return _result("sent", sent=1)
 
 
-def _loop():
-    while not _stop_event.is_set():
-        try:
-            run_once()
-        except Exception:
-            logger.exception("Auto-send worker failed")
-        _stop_event.wait(max(1, settings.auto_send_poll_seconds))
-
-
 def start_worker():
-    global _thread
-    with _thread_lock:
-        if _thread and _thread.is_alive():
-            return
-        _stop_event.clear()
-        _thread = threading.Thread(target=_loop, name="jobreach-auto-sender", daemon=True)
-        _thread.start()
+    """Register and start the recurring auto-send worker job."""
+    worker_manager.worker.register(
+        "auto_send",
+        run_once,
+        settings.auto_send_poll_seconds,
+        description="Send queued campaign drafts",
+    )
+    worker_manager.start_worker()
 
 
 def stop_worker():
-    global _thread
-    with _thread_lock:
-        thread = _thread
-        _thread = None
-    _stop_event.set()
-    if thread:
-        thread.join(timeout=5)
+    """Stop the shared worker scheduler (idempotent)."""
+    worker_manager.stop_worker()

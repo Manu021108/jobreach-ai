@@ -7,7 +7,7 @@ from sqlalchemy.schema import CreateTable
 from app.config import settings
 from app.db.models import Base
 
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False, "timeout": 30} if settings.database_url.startswith("sqlite") else {}
 engine = create_engine(settings.database_url, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
@@ -48,6 +48,7 @@ def _ensure_columns():
         },
         "campaign_contacts": {
             "last_attempt_at": "ALTER TABLE campaign_contacts ADD COLUMN last_attempt_at DATETIME",
+            "reserved_at": "ALTER TABLE campaign_contacts ADD COLUMN reserved_at DATETIME",
         },
         "users": {
             "onboarding_completed": "ALTER TABLE users ADD COLUMN onboarding_completed BOOLEAN DEFAULT 1",

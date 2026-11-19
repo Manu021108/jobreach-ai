@@ -3,13 +3,13 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 import main
 from app.config import settings
 from app.db import session as db_session
-from app.db.models import Base, Contact
+from app.db.models import Base, CampaignContact, Contact
 from app.services import audit
 from app.services import auth as auth_service
 from app.services import auto_sender
@@ -240,3 +240,110 @@ def test_start_rejects_dry_run(client_factory, monkeypatch):
     response = client.post(f"/api/campaigns/{campaign['id']}/start")
     assert response.status_code == 409
     assert "Dry-run" in response.json()["detail"]
+
+
+def _stale_sending_entry(factory, campaign_id, draft_id):
+    with factory() as db:
+        entry = db.scalar(
+            select(CampaignContact).where(
+                CampaignContact.campaign_id == campaign_id,
+                CampaignContact.draft_id == draft_id,
+            )
+        )
+        entry.state = "SENDING"
+        entry.reserved_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        db.commit()
+
+
+def _campaign_state(client, campaign_id):
+    return next(item for item in client.get("/api/campaigns").json() if item["id"] == campaign_id)
+
+
+def test_send_claim_is_atomic(client_factory):
+    client, factory = client_factory()
+    user, campaign = _ready_campaign(client, factory, 1)
+    draft_id = campaign["entries"][0]["draft_id"]
+
+    assert campaign_service.claim_for_send(draft_id, user["id"]) is True
+    assert campaign_service.claim_for_send(draft_id, user["id"]) is False
+
+    with factory() as db:
+        entry = db.scalar(select(CampaignContact).where(CampaignContact.draft_id == draft_id))
+        assert entry.state == "SENDING"
+        assert entry.reserved_at is not None
+
+    assert campaign_service.release_send_claim(draft_id, user["id"], "QUEUED") is True
+    with factory() as db:
+        entry = db.scalar(select(CampaignContact).where(CampaignContact.draft_id == draft_id))
+        assert entry.state == "QUEUED"
+        assert entry.reserved_at is None
+
+
+def test_uncertain_sending_is_not_retried_when_verification_fails(client_factory, monkeypatch):
+    client, factory = client_factory()
+    user, campaign = _ready_campaign(client, factory, 1)
+    draft_id = campaign["entries"][0]["draft_id"]
+    assert client.post(f"/api/campaigns/{campaign['id']}/start").status_code == 200
+    _stale_sending_entry(factory, campaign["id"], draft_id)
+
+    def fail_verification(*_args):
+        raise RuntimeError("Gmail is unavailable")
+
+    monkeypatch.setattr(auto_sender, "_gmail_send_exists", fail_verification)
+    assert auto_sender.reconcile_stale_sending(user["id"]) == 0
+    assert auto_sender.run_once()["status"] == "idle"
+
+    paused = _campaign_state(client, campaign["id"])
+    assert paused["status"] == "PAUSED"
+    assert paused["entries"][0]["state"] == "SENDING"
+    assert FakeGmail.sent == []
+
+
+def test_confirmed_stale_sending_is_finalized(client_factory, monkeypatch):
+    client, factory = client_factory()
+    user, campaign = _ready_campaign(client, factory, 1)
+    draft_id = campaign["entries"][0]["draft_id"]
+    assert client.post(f"/api/campaigns/{campaign['id']}/start").status_code == 200
+    _stale_sending_entry(factory, campaign["id"], draft_id)
+    monkeypatch.setattr(auto_sender, "_gmail_send_exists", lambda *_args: True)
+
+    assert auto_sender.reconcile_stale_sending(user["id"]) == 1
+
+    completed = _campaign_state(client, campaign["id"])
+    assert completed["status"] == "COMPLETED"
+    assert completed["counts"]["sent"] == 1
+    assert completed["entries"][0]["state"] == "SENT"
+    assert completed["entries"][0]["draft_status"] == "SENT"
+    assert FakeGmail.sent == []
+
+
+def test_unmatched_stale_sending_is_requeued(client_factory, monkeypatch):
+    client, factory = client_factory()
+    user, campaign = _ready_campaign(client, factory, 1)
+    draft_id = campaign["entries"][0]["draft_id"]
+    assert client.post(f"/api/campaigns/{campaign['id']}/start").status_code == 200
+    _stale_sending_entry(factory, campaign["id"], draft_id)
+    monkeypatch.setattr(auto_sender, "_gmail_send_exists", lambda *_args: False)
+
+    assert auto_sender.reconcile_stale_sending(user["id"]) == 1
+    requeued = _campaign_state(client, campaign["id"])
+    assert requeued["status"] == "RUNNING"
+    assert requeued["entries"][0]["state"] == "QUEUED"
+
+    assert auto_sender.run_once()["status"] == "sent"
+    assert _campaign_state(client, campaign["id"])["counts"]["sent"] == 1
+
+
+def test_worker_scheduler_restart_reregisters_jobs():
+    from app.services import worker as worker_manager
+
+    manager = worker_manager.WorkerManager()
+    manager.register("test-job", lambda: None, 60)
+    try:
+        manager.start()
+        assert len(manager._scheduler.get_jobs()) == 1
+        manager.stop()
+        manager.start()
+        assert len(manager._scheduler.get_jobs()) == 1
+    finally:
+        manager.stop()
