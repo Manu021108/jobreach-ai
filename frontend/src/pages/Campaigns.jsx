@@ -9,6 +9,7 @@ import {
   Plus,
   Rocket,
   Send,
+  ShieldCheck,
   Sparkles,
   Users,
 } from "lucide-react";
@@ -33,7 +34,7 @@ import { formatDate } from "../lib/format";
 const BLOCKED = new Set(["SENT", "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED"]);
 
 export function Campaigns() {
-  const { contacts, campaigns, run, busy, notify } = useWorkspace();
+  const { contacts, campaigns, run, busy, notify, settings } = useWorkspace();
   const [searchParams, setSearchParams] = useSearchParams();
   const autoOpened = useRef(false);
   const [generateOpen, setGenerateOpen] = useState(false);
@@ -163,6 +164,14 @@ export function Campaigns() {
           </>
         )}
       />
+
+      <div className={`campaign-safety ${settings?.dry_run ? "" : "manual"}`.trim()}>
+        <ShieldCheck size={18} />
+        <div>
+          <strong>{settings?.dry_run ? "Safe mode: dry run" : "Safe mode: manual approval"}</strong>
+          <span>{settings?.dry_run ? "Sends are simulated. No email is delivered while dry run is enabled." : "Every email still needs explicit approval and confirmation before delivery."}</span>
+        </div>
+      </div>
 
       <div className="stat-strip">
         <div><span className="stat-icon tone-teal"><Rocket size={17} /></span><strong>{totals.campaigns}</strong><small>Total campaigns</small></div>

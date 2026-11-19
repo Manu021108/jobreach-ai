@@ -41,7 +41,22 @@ import { useWorkspace } from "../context/WorkspaceContext";
 import { api } from "../lib/api";
 import { formatShortDate, titleCase } from "../lib/format";
 
-const COLORS = ["#45E6C4", "#68A9FF", "#A78BFA", "#F6C76B", "#FF8A8A"];
+const CHART_THEMES = {
+  dark: {
+    colors: ["#45E6C4", "#68A9FF", "#A78BFA", "#F6C76B", "#FF8A8A"],
+    grid: "rgba(255,255,255,0.06)",
+    axis: "#8A9BB5",
+    cursor: "rgba(255,255,255,0.03)",
+    fill: 0.34,
+  },
+  light: {
+    colors: ["#0D9F86", "#2F7FE0", "#7C5CE5", "#A87316", "#D95C5C"],
+    grid: "rgba(15,29,51,0.09)",
+    axis: "#5D708C",
+    cursor: "rgba(15,29,51,0.04)",
+    fill: 0.2,
+  },
+};
 
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -56,7 +71,8 @@ function ChartTooltip({ active, payload, label }) {
 }
 
 export function Analytics() {
-  const { analytics, campaigns, notify } = useWorkspace();
+  const { analytics, campaigns, notify, theme } = useWorkspace();
+  const palette = CHART_THEMES[theme] || CHART_THEMES.dark;
   const [period, setPeriod] = useState("30");
   const [data, setData] = useState(analytics);
   const [loading, setLoading] = useState(false);
@@ -84,7 +100,7 @@ export function Analytics() {
   const totals = data?.totals || {};
   const series = (data?.series || []).map((item) => ({ ...item, label: formatShortDate(item.date) }));
   const replyRate = totals.sent ? Math.round((totals.replies / totals.sent) * 100) : 0;
-  const responseRate = totals.sent ? Math.round((totals.replies / totals.sent) * 100) : 0;
+  const optOutRate = totals.sent ? Math.round(((totals.opt_outs || 0) / totals.sent) * 100) : 0;
   const pipeline = data?.pipeline || {};
   const draftPipeline = data?.draft_pipeline || {};
   const topCompanies = data?.companies || [];
@@ -158,20 +174,20 @@ export function Analytics() {
                   <AreaChart data={series} margin={{ top: 10, right: 12, left: -18, bottom: 0 }}>
                     <defs>
                       <linearGradient id="sentGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#68A9FF" stopOpacity={0.34} />
-                        <stop offset="100%" stopColor="#68A9FF" stopOpacity={0} />
+                        <stop offset="0%" stopColor={palette.colors[1]} stopOpacity={palette.fill} />
+                        <stop offset="100%" stopColor={palette.colors[1]} stopOpacity={0} />
                       </linearGradient>
                       <linearGradient id="replyGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#45E6C4" stopOpacity={0.3} />
-                        <stop offset="100%" stopColor="#45E6C4" stopOpacity={0} />
+                        <stop offset="0%" stopColor={palette.colors[0]} stopOpacity={palette.fill} />
+                        <stop offset="100%" stopColor={palette.colors[0]} stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
-                    <XAxis dataKey="date" tickFormatter={formatShortDate} tick={{ fill: "#8A9BB5", fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={24} />
-                    <YAxis tick={{ fill: "#8A9BB5", fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                    <CartesianGrid stroke={palette.grid} vertical={false} />
+                    <XAxis dataKey="date" tickFormatter={formatShortDate} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={24} />
+                    <YAxis tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
                     <Tooltip content={<ChartTooltip />} />
-                    <Area type="monotone" dataKey="sent" stroke="#68A9FF" strokeWidth={2.2} fill="url(#sentGradient)" />
-                    <Area type="monotone" dataKey="replies" stroke="#45E6C4" strokeWidth={2.2} fill="url(#replyGradient)" />
+                    <Area type="monotone" dataKey="sent" stroke={palette.colors[1]} strokeWidth={2.2} fill="url(#sentGradient)" />
+                    <Area type="monotone" dataKey="replies" stroke={palette.colors[0]} strokeWidth={2.2} fill="url(#replyGradient)" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -188,8 +204,8 @@ export function Analytics() {
                 ))}
               </div>
               <div className="funnel-footer">
-                <div><span>Response rate</span><strong>{responseRate}%</strong></div>
-                <div><span>Opt-outs</span><strong>{totals.opted_out || 0}</strong></div>
+                <div><span>Reply rate</span><strong>{replyRate}%</strong></div>
+                <div><span>Opt-out rate</span><strong>{optOutRate}%</strong></div>
                 <div><span>Active roles</span><strong>{totals.active_jobs || 0}</strong></div>
               </div>
             </GlassCard>
@@ -202,12 +218,12 @@ export function Analytics() {
                 <div className="chart-wrap">
                   <ResponsiveContainer width="100%" height={260}>
                     <BarChart data={pipelineData} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                      <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
-                      <XAxis dataKey="name" tick={{ fill: "#8A9BB5", fontSize: 11 }} axisLine={false} tickLine={false} interval={0} />
-                      <YAxis tick={{ fill: "#8A9BB5", fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
-                      <Tooltip content={<ChartTooltip />} cursor={{ fill: "rgba(255,255,255,0.03)" }} />
+                      <CartesianGrid stroke={palette.grid} vertical={false} />
+                      <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} interval={0} />
+                      <YAxis tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                      <Tooltip content={<ChartTooltip />} cursor={{ fill: palette.cursor }} />
                       <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                        {pipelineData.map((entry, index) => <Cell key={entry.key} fill={COLORS[index % COLORS.length]} />)}
+                        {pipelineData.map((entry, index) => <Cell key={entry.key} fill={palette.colors[index % palette.colors.length]} />)}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
@@ -221,12 +237,12 @@ export function Analytics() {
                 <div className="chart-wrap">
                   <ResponsiveContainer width="100%" height={260}>
                     <LineChart data={draftData} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                      <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
-                      <XAxis dataKey="name" tick={{ fill: "#8A9BB5", fontSize: 11 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: "#8A9BB5", fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                      <CartesianGrid stroke={palette.grid} vertical={false} />
+                      <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
                       <Tooltip content={<ChartTooltip />} />
-                      <Legend wrapperStyle={{ color: "#8A9BB5", fontSize: 12 }} />
-                      <Line type="monotone" dataKey="value" name="Drafts" stroke="#A78BFA" strokeWidth={2.4} dot={{ r: 3, fill: "#A78BFA" }} activeDot={{ r: 5 }} />
+                      <Legend wrapperStyle={{ color: palette.axis, fontSize: 12 }} />
+                      <Line type="monotone" dataKey="value" name="Drafts" stroke={palette.colors[2]} strokeWidth={2.4} dot={{ r: 3, fill: palette.colors[2] }} activeDot={{ r: 5 }} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>

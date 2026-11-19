@@ -11,6 +11,7 @@ import {
   Users,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Avatar,
   Button,
@@ -26,6 +27,7 @@ import {
 } from "../components/ui";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { api, post } from "../lib/api";
+import { money } from "../lib/format";
 
 export function Unlock() {
   const { hrDatabase, billing, contacts, refresh, notify } = useWorkspace();
@@ -41,8 +43,7 @@ export function Unlock() {
 
   const unlocked = Boolean(data?.unlocked ?? billing?.unlocked);
   const freeUnlockEnabled = Boolean(billing?.free_unlock_enabled ?? data?.free_unlock_enabled);
-  const price = billing?.amount_total != null ? (billing.amount_total / 100).toLocaleString() : "—";
-  const currency = billing?.currency || "INR";
+  const price = money(billing?.amount_total, billing?.currency || "INR");
 
   const load = useCallback(async () => {
     if (!unlocked) return;
@@ -180,13 +181,13 @@ export function Unlock() {
               <div><CheckCircle2 size={17} /><span>Lifetime workspace access</span></div>
             </div>
             <div className="unlock-cta">
-              <Button icon={LockKeyhole} loading={unlocking} onClick={unlock}>Unlock for {currency} {price}</Button>
+              <Button icon={LockKeyhole} loading={unlocking} onClick={unlock}>Unlock for {price}</Button>
               {freeUnlockEnabled ? (
                 <Button variant="secondary" icon={KeyRound} loading={freeUnlocking} onClick={unlockFree}>
                   Unlock all emails free
                 </Button>
               ) : null}
-              <span>One-time payment A� secure checkout</span>
+              <span>One-time payment via secure checkout</span>
             </div>
           </GlassCard>
 
@@ -293,7 +294,7 @@ export function Unlock() {
       <GlassCard className="safety-banner">
         <span className="safety-icon"><ShieldCheck size={20} /></span>
         <div><strong>Imports stay inside your workspace</strong><p>Imported contacts are added as new companies with verified context. Existing duplicates are skipped safely.</p></div>
-        <a href="https://stripe.com" target="_blank" rel="noreferrer" className="text-link">Billing help <ArrowUpRight size={14} /></a>
+        <Link to="/settings" className="text-link">Billing settings <ArrowUpRight size={14} /></Link>
       </GlassCard>
     </div>
   );

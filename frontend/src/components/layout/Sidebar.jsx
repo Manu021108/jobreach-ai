@@ -1,6 +1,17 @@
-import { motion } from "framer-motion";
-import { ChevronLeft, ChevronsUpDown, LogOut, PanelLeftClose, PanelLeftOpen, Sparkles, X } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { AnimatePresence, motion } from "framer-motion";
+import {
+  ChevronLeft,
+  ChevronsUpDown,
+  LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings,
+  Sparkles,
+  Unlock,
+  X,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Link, NavLink } from "react-router-dom";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { navigation } from "../../lib/navigation";
 import { initials } from "../../lib/format";
@@ -10,6 +21,16 @@ export function Sidebar({ mobileOpen, onClose }) {
   const { user, signOut, sidebarCollapsed, setSidebarCollapsed, billing } = useWorkspace();
   const planName = billing?.plan_name || billing?.plan || "Starter";
   const collapsed = sidebarCollapsed && !mobileOpen;
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const workspaceRef = useRef(null);
+
+  useEffect(() => {
+    const handleClick = (event) => {
+      if (workspaceRef.current && !workspaceRef.current.contains(event.target)) setWorkspaceOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
 
   return (
     <>
@@ -96,7 +117,36 @@ export function Sidebar({ mobileOpen, onClose }) {
             <IconButton label="Sign out" icon={LogOut} className="profile-signout" onClick={signOut} />
           )}
         </div>
-        {!collapsed ? <div className="plan-pill"><span>{planName}</span><ChevronsUpDown size={13} /></div> : null}
+        {!collapsed ? (
+          <div className="workspace-menu" ref={workspaceRef}>
+            <button
+              type="button"
+              className="plan-pill"
+              onClick={() => setWorkspaceOpen((current) => !current)}
+              aria-expanded={workspaceOpen}
+            >
+              <span>{planName} workspace</span>
+              <ChevronsUpDown size={13} />
+            </button>
+            <AnimatePresence>
+              {workspaceOpen ? (
+                <motion.div
+                  className="workspace-dropdown"
+                  initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 6 }}
+                >
+                  <div className="workspace-dropdown-head">
+                    <span className="workspace-glyph"><Sparkles size={15} /></span>
+                    <div><strong>Personal workspace</strong><small>{planName} plan</small></div>
+                  </div>
+                  <Link to="/settings" onClick={() => setWorkspaceOpen(false)}><Settings size={15} /> Profile & settings</Link>
+                  <Link to="/unlock" onClick={() => setWorkspaceOpen(false)}><Unlock size={15} /> Unlock HR database</Link>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </div>
+        ) : null}
       </motion.aside>
     </>
   );

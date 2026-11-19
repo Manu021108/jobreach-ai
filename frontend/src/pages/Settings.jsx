@@ -26,7 +26,7 @@ import {
 } from "../components/ui";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { api, post, put } from "../lib/api";
-import { formatDate } from "../lib/format";
+import { formatDate, money } from "../lib/format";
 
 const TABS = [
   { id: "profile", label: "Profile", icon: UserRound },
@@ -309,7 +309,7 @@ export function Settings() {
                   </div>
                   {!billing?.unlocked ? (
                     <div className="billing-offer">
-                      <div><strong>Unlock the verified HR database</strong><span>One-time purchase A� {billing?.currency || "INR"} {billing?.amount_total != null ? (billing.amount_total / 100).toLocaleString() : "-"}</span></div>
+                      <div><strong>Unlock the verified HR database</strong><span>One-time purchase {money(billing?.amount_total, billing?.currency || "INR")}</span></div>
                       <div className="billing-offer-actions">
                         {billing?.free_unlock_enabled ? (
                           <Button variant="secondary" size="sm" icon={KeyRound} loading={freeUnlocking} onClick={unlockDatabaseFree}>Free access</Button>

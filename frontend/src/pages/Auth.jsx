@@ -150,7 +150,7 @@ export function Auth({ onAuthenticated, initialMode = "login", initialToken = ""
             <button type="button" className="auth-link-button" onClick={() => switchMode("login")}>Back to sign in</button>
           ) : null}
 
-          <p className="auth-footnote">Local-first workspace · Your data stays on this device</p>
+          <p className="auth-footnote">Private workspace · Your outreach data stays in your account</p>
           <div className="auth-legal">
             <Link to="/legal?doc=privacy">Privacy</Link>
             <span>·</span>

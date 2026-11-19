@@ -119,6 +119,14 @@ export function Studio() {
       ? subject !== selectedDraft.subject || body !== selectedDraft.body
       : subject.trim() || body.trim(),
   );
+  const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0;
+  const bodyText = body.toLowerCase();
+  const mentions = (value) => Boolean(value && bodyText.includes(String(value).toLowerCase()));
+  const personalization = [
+    { label: "Company name", present: mentions(selectedContact?.company_name) },
+    { label: "Contact name", present: mentions(selectedContact?.hr_name) },
+    { label: "Role context", present: mentions(selectedContact?.role) },
+  ];
 
   useEffect(() => {
     if (!selectedDraft) {
@@ -352,7 +360,14 @@ export function Studio() {
               <label className="composer-field grow">
                 <span>Message</span>
                 <textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="Write a thoughtful message, or generate a first draft with AI..." maxLength={50000} />
-                <small>{body.length.toLocaleString()} / 50,000 characters</small>
+                <small>{wordCount.toLocaleString()} words · {body.length.toLocaleString()} / 50,000 characters</small>
+                <div className="personalization-row">
+                  {personalization.map((item) => (
+                    <span className={item.present ? "present" : ""} key={item.label}>
+                      <Check size={12} /> {item.label}
+                    </span>
+                  ))}
+                </div>
               </label>
 
               <div className="composer-actions">

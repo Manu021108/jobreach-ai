@@ -48,6 +48,7 @@ export function Companies() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All");
+  const [sort, setSort] = useState("recent");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState([]);
   const [createOpen, setCreateOpen] = useState(false);
@@ -68,7 +69,7 @@ export function Companies() {
 
   useEffect(() => {
     setPage(1);
-  }, [query, status]);
+  }, [query, status, sort]);
 
   const counts = useMemo(() => {
     const result = { All: contacts.length };
@@ -78,12 +79,18 @@ export function Companies() {
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
-    return contacts.filter((contact) => {
+    const rows = contacts.filter((contact) => {
       const matchesStatus = status === "All" || contact.status === status;
       const haystack = [contact.company_name, contact.email, contact.hr_name, contact.role, contact.location, contact.website].join(" ").toLowerCase();
       return matchesStatus && (!term || haystack.includes(term));
     });
-  }, [contacts, query, status]);
+    return rows.sort((a, b) => {
+      if (sort === "company") return a.company_name.localeCompare(b.company_name);
+      if (sort === "status") return a.status.localeCompare(b.status) || a.company_name.localeCompare(b.company_name);
+      if (sort === "oldest") return new Date(a.updated_at || 0) - new Date(b.updated_at || 0);
+      return new Date(b.updated_at || 0) - new Date(a.updated_at || 0);
+    });
+  }, [contacts, query, sort, status]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const visible = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -254,6 +261,17 @@ export function Companies() {
               value={status}
               onChange={setStatus}
               options={[{ value: "All", label: `All statuses (${counts.All})` }, ...statusOptions.map((option) => ({ value: option, label: titleCase(option) }))]}
+            />
+            <FilterSelect
+              label="Sort"
+              value={sort}
+              onChange={setSort}
+              options={[
+                { value: "recent", label: "Recently updated" },
+                { value: "oldest", label: "Oldest first" },
+                { value: "company", label: "Company A–Z" },
+                { value: "status", label: "Outreach status" },
+              ]}
             />
           </div>
           <div className="table-toolbar-right">

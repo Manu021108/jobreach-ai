@@ -87,3 +87,14 @@ export function parseEvidence(value) {
     return null;
   }
 }
+
+export function parseReasonList(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(String(value).replace(/'/g, '"'));
+    if (Array.isArray(parsed)) return parsed.map(String);
+  } catch {
+    return [String(value)];
+  }
+  return [String(value)];
+}

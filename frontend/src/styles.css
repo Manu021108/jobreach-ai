@@ -602,6 +602,11 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+.workspace-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
 .plan-pill {
   display: inline-flex;
   align-items: center;
@@ -617,6 +622,80 @@ select:focus-visible {
   padding: 3px 7px;
   border-radius: 6px;
   margin: 6px 8px 0;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.plan-pill:hover {
+  border-color: rgba(69, 230, 196, 0.36);
+  background: rgba(69, 230, 196, 0.16);
+}
+
+.workspace-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 8px;
+  width: 226px;
+  padding: 7px;
+  border-radius: 13px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(26px);
+  z-index: 60;
+}
+
+.workspace-dropdown-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 9px 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 5px;
+}
+
+.workspace-dropdown-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.workspace-dropdown-head strong {
+  font-size: 11.5px;
+}
+
+.workspace-dropdown-head small {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.workspace-glyph {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(69, 230, 196, 0.12);
+  color: var(--teal);
+}
+
+.workspace-dropdown a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.workspace-dropdown a:hover {
+  color: var(--text);
+  background: var(--surface-hover);
 }
 
 .profile-actions {
@@ -744,6 +823,133 @@ select:focus-visible {
   background: var(--teal);
   border: 1.5px solid var(--bg);
   box-shadow: 0 0 8px var(--teal);
+}
+
+.notification-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 330px;
+  max-width: 88vw;
+  padding: 8px;
+  border-radius: 14px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(28px);
+  z-index: 60;
+}
+
+.notification-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 9px 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 5px;
+}
+
+.notification-head strong {
+  font-size: 11.5px;
+}
+
+.notification-head span {
+  color: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.notification-item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-soft);
+  text-align: left;
+  cursor: pointer;
+}
+
+.notification-item:hover {
+  background: var(--surface-hover);
+}
+
+.notification-item > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.notification-item strong {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.notification-item small {
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.notification-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.notification-empty {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 18px 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.notification-empty svg {
+  color: var(--teal);
+}
+
+.gmail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.gmail-chip.connected {
+  color: var(--teal);
+  border-color: rgba(69, 230, 196, 0.2);
+  background: rgba(69, 230, 196, 0.07);
+}
+
+.gmail-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 7px currentColor;
 }
 
 .topbar-new {
@@ -946,9 +1152,14 @@ select:focus-visible {
   cursor: pointer;
 }
 
-.palette-item:hover {
+.palette-item:hover,
+.palette-item.active {
   background: var(--surface-hover);
   color: var(--text);
+}
+
+.palette-item.active {
+  box-shadow: inset 2px 0 var(--teal);
 }
 
 .palette-icon {
@@ -3018,6 +3229,45 @@ select:focus-visible {
   margin-top: 5px;
 }
 
+.reason-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.reason-list li {
+  position: relative;
+  padding-left: 14px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.reason-list li::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--teal);
+}
+
+.match-explain-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
 .match-main {
   display: flex;
   flex-direction: column;
@@ -3290,6 +3540,32 @@ select:focus-visible {
 
 .composer-field.grow {
   flex: 1;
+}
+
+.personalization-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.personalization-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 8.5px;
+}
+
+.personalization-row span.present {
+  border-color: rgba(69, 230, 196, 0.24);
+  background: rgba(69, 230, 196, 0.08);
+  color: var(--teal);
 }
 
 .composer-actions {
@@ -3743,6 +4019,48 @@ select:focus-visible {
   color: var(--muted);
   font-size: 9.5px;
   line-height: 1.45;
+}
+
+.campaign-safety {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(69, 230, 196, 0.16);
+  background: rgba(69, 230, 196, 0.06);
+  color: var(--text-soft);
+  font-size: 10.5px;
+}
+
+.campaign-safety.manual {
+  border-color: rgba(246, 199, 107, 0.2);
+  background: rgba(246, 199, 107, 0.06);
+}
+
+.campaign-safety svg {
+  flex: 0 0 auto;
+  color: var(--teal);
+}
+
+.campaign-safety.manual svg {
+  color: var(--amber);
+}
+
+.campaign-safety > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.campaign-safety strong {
+  font-weight: 650;
+}
+
+.campaign-safety span {
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 .followup-toolbar {
@@ -6769,6 +7087,10 @@ select:focus-visible {
     min-height: 66px;
   }
 
+  .gmail-chip {
+    display: none;
+  }
+
   .studio-page {
     height: calc(100vh - 66px);
     margin: -22px -20px -74px;
@@ -7230,5 +7552,20 @@ select:focus-visible {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

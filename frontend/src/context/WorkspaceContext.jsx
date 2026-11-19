@@ -32,6 +32,8 @@ export function WorkspaceProvider({ user, setUser, children }) {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("jobreach-theme", theme);
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    if (themeColor) themeColor.setAttribute("content", theme === "dark" ? "#0B1220" : "#EEF2F9");
   }, [theme]);
 
   useEffect(() => {
