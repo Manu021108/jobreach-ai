@@ -21,6 +21,7 @@ import {
   ConfirmDialog,
   EmptyState,
   GlassCard,
+  LoadingSkeleton,
   Modal,
   PageHeader,
   ProgressBar,
@@ -34,38 +35,63 @@ import { formatDate } from "../lib/format";
 const BLOCKED = new Set(["SENT", "REPLIED", "OPTED_OUT", "NOT_INTERESTED", "ARCHIVED"]);
 
 export function Campaigns() {
-  const { contacts, campaigns, run, busy, notify, settings } = useWorkspace();
+  const {
+    contacts,
+    contactsPage,
+    contactsLoading,
+    campaigns,
+    run,
+    busy,
+    notify,
+    settings,
+    loadContacts,
+    lookupContacts,
+  } = useWorkspace();
   const [searchParams, setSearchParams] = useSearchParams();
   const autoOpened = useRef(false);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [selected, setSelected] = useState([]);
   const [contactSearch, setContactSearch] = useState("");
+  const [debouncedContactSearch, setDebouncedContactSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState([]);
   const [confirm, setConfirm] = useState(null);
 
-  const eligible = useMemo(
-    () => contacts.filter((contact) => !contact.opted_out && !BLOCKED.has(contact.status)),
-    [contacts],
-  );
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedContactSearch(contactSearch.trim()), 280);
+    return () => window.clearTimeout(timer);
+  }, [contactSearch]);
+
+  useEffect(() => {
+    if (!generateOpen) return;
+    loadContacts({ q: debouncedContactSearch, eligible: true, sort: "company", page_size: 25 });
+  }, [debouncedContactSearch, generateOpen, loadContacts]);
 
   useEffect(() => {
     if (autoOpened.current) return;
     const ids = searchParams.get("contacts");
     if (!ids) return;
-    const parsed = ids.split(",").map(Number).filter((id) => eligible.some((contact) => contact.id === id));
-    if (parsed.length) {
-      setSelected(parsed);
-      setGenerateOpen(true);
-    }
     autoOpened.current = true;
     setSearchParams({}, { replace: true });
-  }, [eligible, searchParams, setSearchParams]);
-
-  const filteredContacts = useMemo(() => {
-    const term = contactSearch.trim().toLowerCase();
-    return eligible.filter((contact) => !term || `${contact.company_name} ${contact.hr_name} ${contact.email} ${contact.role}`.toLowerCase().includes(term));
-  }, [contactSearch, eligible]);
+    const parsed = ids.split(",").map(Number).filter(Boolean);
+    if (!parsed.length) return;
+    let cancelled = false;
+    const hydrate = async () => {
+      const result = await lookupContacts(parsed);
+      if (cancelled) return;
+      const valid = result.rows
+        .filter((contact) => !contact.opted_out && !BLOCKED.has(contact.status))
+        .map((contact) => contact.id);
+      if (valid.length) {
+        setSelected(valid);
+        setGenerateOpen(true);
+      }
+    };
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [lookupContacts, searchParams, setSearchParams]);
 
   const visibleCampaigns = useMemo(() => {
     if (filter === "all") return campaigns;
@@ -275,12 +301,12 @@ export function Campaigns() {
         <div className="campaign-picker">
           <SearchBar value={contactSearch} onChange={setContactSearch} placeholder="Search eligible contacts..." />
           <div className="picker-toolbar">
-            <button type="button" onClick={() => setSelected(filteredContacts.map((contact) => contact.id))}>Select all</button>
+            <button type="button" disabled={contactsLoading || !contacts.length} onClick={() => setSelected(contacts.map((contact) => contact.id))}>Select loaded rows</button>
             <button type="button" onClick={() => setSelected([])}>Clear</button>
-            <span>{selected.length} selected</span>
+            <span>{selected.length} selected · {contactsPage.total || 0} matching</span>
           </div>
           <div className="picker-list">
-            {filteredContacts.length ? filteredContacts.map((contact) => (
+            {contactsLoading ? <LoadingSkeleton rows={5} /> : contacts.length ? contacts.map((contact) => (
               <label className={`picker-row ${selected.includes(contact.id) ? "selected" : ""}`.trim()} key={contact.id}>
                 <input type="checkbox" checked={selected.includes(contact.id)} onChange={() => toggleSelected(contact.id)} />
                 <Avatar name={contact.company_name} size="sm" />

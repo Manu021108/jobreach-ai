@@ -219,7 +219,7 @@ Run locally first. Do not expose this app publicly without HTTPS and a trusted-h
 
 The current app is local-first with per-user isolation. The most useful next steps, in order, are:
 
-1. Add server-side pagination and search for contacts, drafts, and audit entries; the current UI loads all records at once.
+1. Add server-side pagination and search for drafts and audit entries; contacts already use paginated, server-filtered queries with indexed, stable ordering.
 2. Move slow AI generation and Gmail reply sync into a background task with visible progress and retryable failures.
 3. Add scheduled, verified PostgreSQL backups and retention policies before scaling data volume.
 4. Add import preview/validation so spreadsheet errors can be fixed before records are added.

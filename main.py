@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import pandas as pd
-from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Body, Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -43,6 +43,7 @@ from app.services.security import (
 from app.services.job_discovery import discover_jobs
 from app.services.job_matcher import match_job
 from app.services.outreach import (
+    CONTACT_STATUSES,
     add_contacts,
     analytics_summary,
     approve_draft,
@@ -58,7 +59,10 @@ from app.services.outreach import (
     get_jobs,
     inbox_threads,
     list_all_jobs,
+    list_paged_contacts,
+    lookup_contacts,
     mark_sent,
+    recent_contacts,
     record_failed,
     save_draft,
     save_jobs,
@@ -84,14 +88,15 @@ app.add_middleware(
 )
 _send_lock = threading.Lock()
 _sent_this_run = 0
-_all_statuses = {
-    "PENDING", "DRAFTED", "SENT", "REPLIED", "FAILED",
-    "NOT_INTERESTED", "OPTED_OUT", "ARCHIVED",
-}
+_all_statuses = CONTACT_STATUSES
 
 
 class ContactStatusUpdate(BaseModel):
     status: Literal["PENDING", "REPLIED", "NOT_INTERESTED", "OPTED_OUT", "ARCHIVED"]
+
+
+class ContactLookupInput(BaseModel):
+    ids: list[int] = Field(default_factory=list)
 
 
 class CompanyContextUpdate(BaseModel):
@@ -167,14 +172,14 @@ class ResetPasswordInput(BaseModel):
 
 
 class ProfileInput(BaseModel):
-    full_name: str = Field(max_length=200)
-    phone: str = Field(default="", max_length=50)
-    location: str = Field(default="", max_length=200)
-    linkedin: str = Field(default="", max_length=500)
-    github: str = Field(default="", max_length=500)
-    summary: str = Field(default="", max_length=20_000)
-    skills: str = Field(default="", max_length=5_000)
-    target_roles: str = Field(default="", max_length=500)
+    full_name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=50)
+    location: str | None = Field(default=None, max_length=200)
+    linkedin: str | None = Field(default=None, max_length=500)
+    github: str | None = Field(default=None, max_length=500)
+    summary: str | None = Field(default=None, max_length=20_000)
+    skills: str | None = Field(default=None, max_length=5_000)
+    target_roles: str | None = Field(default=None, max_length=500)
 
 
 class HRImportInput(BaseModel):
@@ -538,7 +543,7 @@ def dashboard(user: User = Depends(get_current_user)):
         "run_cap": settings.max_emails_per_run,
         "dry_run": compliance.dry_run_enabled(user),
         "followups": followup_counts(user.id),
-        "recent_contacts": [_contact_dict(contact) for contact in get_contacts(owner_id=user.id)[:15]],
+        "recent_contacts": [_contact_dict(contact) for contact in recent_contacts(user.id)],
     }
 
 
@@ -557,6 +562,35 @@ def contacts(status: str = "All", user: User = Depends(get_current_user)):
     if status != "All" and status not in _all_statuses:
         raise HTTPException(status_code=400, detail="Invalid contact status filter.")
     return [_contact_dict(contact) for contact in get_contacts(status, user.id)]
+
+
+@app.get("/api/contacts/paged")
+def contacts_paged(
+    q: str = "",
+    status: str = "All",
+    sort: str = "recent",
+    page: int = 1,
+    page_size: int = 25,
+    eligible: bool = False,
+    user: User = Depends(get_current_user),
+):
+    if status != "All" and status not in _all_statuses:
+        raise HTTPException(status_code=400, detail="Invalid contact status filter.")
+    result = list_paged_contacts(user.id, q, status, sort, page, page_size, eligible)
+    return {**result, "rows": [_contact_dict(contact) for contact in result["rows"]]}
+
+
+@app.post("/api/contacts/lookup")
+def contacts_lookup(payload: ContactLookupInput, user: User = Depends(get_current_user)):
+    return {"rows": [_contact_dict(contact) for contact in lookup_contacts(payload.ids, user.id)]}
+
+
+@app.get("/api/contacts/{contact_id}")
+def contact_detail(contact_id: int, user: User = Depends(get_current_user)):
+    contact = get_contact(contact_id, user.id)
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found.")
+    return _contact_dict(contact)
 
 
 @app.post("/api/contacts")
@@ -1155,6 +1189,34 @@ def delete_profile_resume(user: User = Depends(get_current_user)):
 @app.post("/api/settings/resume")
 async def upload_settings_resume(file: UploadFile = File(...), user: User = Depends(get_current_user)):
     return await _store_resume(file, user)
+
+
+@app.post("/api/profile/resume/parse")
+async def parse_existing_resume(user: User = Depends(get_current_user), _body: dict = Body(default={})):
+    """Parse the user's existing resume and return extracted information."""
+    from app.services.resume_parser import ParsedResume, parse_resume
+    from app.db.session import SessionLocal
+    from app.db.models import Resume
+    from sqlalchemy import select
+
+    with SessionLocal() as db:
+        resume = db.scalar(select(Resume).where(Resume.user_id == user.id))
+        if not resume:
+            raise HTTPException(status_code=404, detail="No resume uploaded.")
+
+    try:
+        parsed: ParsedResume = parse_resume(resume.content)
+        return {
+            "skills": parsed.skills,
+            "experience_years": parsed.experience_years,
+            "experience_level": parsed.experience_level,
+            "education": parsed.education,
+            "summary": parsed.summary,
+        }
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to parse resume: {exc}") from exc
 
 
 @app.get("/api/settings")

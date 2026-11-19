@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, desc
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -162,7 +162,12 @@ class CampaignContact(Base):
 
 class Contact(Base):
     __tablename__ = "contacts"
-    __table_args__ = (UniqueConstraint("owner_id", "email", "company_name", name="uq_contact_owner_email_company"),)
+    __table_args__ = (
+        UniqueConstraint("owner_id", "email", "company_name", name="uq_contact_owner_email_company"),
+        Index("ix_contacts_owner_updated_id", "owner_id", desc("updated_at"), desc("id")),
+        Index("ix_contacts_owner_status_updated_id", "owner_id", "status", desc("updated_at"), desc("id")),
+        Index("ix_contacts_owner_company_name", "owner_id", "company_name"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     company_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)

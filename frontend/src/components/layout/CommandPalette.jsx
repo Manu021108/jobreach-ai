@@ -8,14 +8,18 @@ import { IconButton } from "../ui";
 
 export function CommandPalette({ open, onClose }) {
   const navigate = useNavigate();
-  const { contacts, drafts, campaigns } = useWorkspace();
+  const { drafts, campaigns, loadContacts } = useWorkspace();
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [contactResults, setContactResults] = useState([]);
   const [active, setActive] = useState(0);
   const inputRef = useRef(null);
 
   useEffect(() => {
     if (!open) return undefined;
     setQuery("");
+    setDebouncedQuery("");
+    setContactResults([]);
     setActive(0);
     const timer = window.setTimeout(() => inputRef.current?.focus(), 40);
     const handleKey = (event) => {
@@ -27,6 +31,29 @@ export function CommandPalette({ open, onClose }) {
       document.removeEventListener("keydown", handleKey);
     };
   }, [open, onClose]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
+    if (!open || !debouncedQuery) {
+      setContactResults([]);
+      return undefined;
+    }
+    let cancelled = false;
+    loadContacts({ q: debouncedQuery, page_size: 8, sort: "company" }, { silent: true })
+      .then((result) => {
+        if (!cancelled) setContactResults(result?.rows || []);
+      })
+      .catch(() => {
+        if (!cancelled) setContactResults([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedQuery, loadContacts, open]);
 
   const items = useMemo(() => {
     const pages = navigation.flatMap((group) => group.items.map((item) => ({
@@ -43,7 +70,7 @@ export function CommandPalette({ open, onClose }) {
     pages.forEach((item) => {
       if (`${item.label} ${item.meta}`.toLowerCase().includes(term)) matches.push(item);
     });
-    contacts.forEach((contact) => {
+    contactResults.forEach((contact) => {
       const haystack = `${contact.company_name} ${contact.hr_name} ${contact.email} ${contact.role}`.toLowerCase();
       if (haystack.includes(term)) {
         matches.push({
@@ -79,7 +106,7 @@ export function CommandPalette({ open, onClose }) {
       }
     });
     return matches.slice(0, 10);
-  }, [campaigns, contacts, drafts, query]);
+  }, [campaigns, contactResults, drafts, query]);
 
   useEffect(() => {
     setActive(0);

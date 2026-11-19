@@ -24,12 +24,13 @@ function nextAction(contact) {
 }
 
 export function Overview() {
-  const { user, dashboard, analytics, contacts, followups, drafts, auditLog, settings } = useWorkspace();
+  const { user, dashboard, analytics, followups, drafts, auditLog, settings } = useWorkspace();
   const stats = dashboard?.stats || {};
   const totals = analytics?.totals || {};
+  const pipeline = analytics?.pipeline || {};
   const series = analytics?.series || [];
   const followupSummary = dashboard?.followups || {};
-  const recentContacts = dashboard?.recent_contacts || contacts.slice(0, 6);
+  const recentContacts = dashboard?.recent_contacts || [];
   const recentActivity = (auditLog || []).slice(0, 5);
   const now = Date.now();
 
@@ -40,8 +41,11 @@ export function Overview() {
     (item) => !item.completed && item.followup_due_at && new Date(item.followup_due_at).getTime() > now,
   );
   const awaitingDrafts = drafts.filter((item) => item.status === "DRAFT" || item.status === "DRAFTED");
-  const recentReplies = contacts.filter((item) => item.status === "REPLIED");
-  const interviewCount = stats.interviews ?? contacts.filter((item) => /interview/i.test(item.status || "")).length;
+  const recentReplies = recentContacts.filter((item) => item.status === "REPLIED");
+  const replyCount = pipeline.REPLIED ?? stats.replies ?? recentReplies.length;
+  const interviewCount = stats.interviews ?? Object.entries(pipeline)
+    .filter(([status]) => /interview/i.test(status))
+    .reduce((sum, [, count]) => sum + (count || 0), 0);
   const replyRate = totals.sent ? Math.round((totals.replies / totals.sent) * 100) : 0;
 
   const sentSpark = series.slice(-12).map((item) => item.sent);
@@ -200,7 +204,7 @@ export function Overview() {
             <div className="focus-stats">
               <div className="focus-stat"><strong>{dueFollowups.length}</strong><span>Follow-ups due</span></div>
               <div className="focus-stat"><strong>{awaitingDrafts.length}</strong><span>Drafts to approve</span></div>
-              <div className="focus-stat"><strong>{recentReplies.length}</strong><span>Recent replies</span></div>
+              <div className="focus-stat"><strong>{replyCount}</strong><span>Recent replies</span></div>
             </div>
             <div className="focus-list">
               {focusItems.length ? focusItems.map((item, index) => {

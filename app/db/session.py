@@ -179,5 +179,17 @@ def init_db():
     _migrate_job_contact_nullable()
     with engine.begin() as conn:
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_job_postings_fingerprint ON job_postings (fingerprint)")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_contacts_owner_updated_id "
+            "ON contacts (owner_id, updated_at DESC, id DESC)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_contacts_owner_status_updated_id "
+            "ON contacts (owner_id, status, updated_at DESC, id DESC)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_contacts_owner_company_name "
+            "ON contacts (owner_id, company_name)"
+        )
         conn.exec_driver_sql("PRAGMA journal_mode=WAL")
         conn.exec_driver_sql("PRAGMA foreign_keys=ON")

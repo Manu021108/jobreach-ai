@@ -3,11 +3,14 @@ import {
   CheckCircle2,
   Circle,
   FileText,
+  LoaderCircle,
   ShieldCheck,
   Sparkles,
   Trash2,
   Upload,
   UserRound,
+  Search,
+  Brain,
 } from "lucide-react";
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -19,9 +22,11 @@ import {
   ProgressRing,
   SectionHeading,
   StatusBadge,
+  Modal,
+  EmptyState,
 } from "../components/ui";
 import { useWorkspace } from "../context/WorkspaceContext";
-import { api } from "../lib/api";
+import { api, post } from "../lib/api";
 
 export function Resume() {
   const { settings, run, busy, notify, refresh } = useWorkspace();
@@ -29,6 +34,9 @@ export function Resume() {
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [parseOpen, setParseOpen] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [parsedData, setParsedData] = useState(null);
 
   const checks = [
     { label: "Profile summary", done: Boolean(settings?.profile_summary) },
@@ -63,6 +71,57 @@ export function Resume() {
   const removeResume = async () => {
     setDeleteOpen(false);
     await run(() => api("/profile/resume", { method: "DELETE" }), "Resume removed.");
+  };
+
+  const parseResume = async () => {
+    setParsing(true);
+    try {
+      const result = await post("/profile/resume/parse", {});
+      setParsedData(result);
+      setParseOpen(true);
+      notify("Resume parsed successfully!");
+    } catch (error) {
+      const message = typeof error === "object" && error !== null && "message" in error
+        ? String(error.message)
+        : String(error);
+      notify(message || "Failed to parse resume", "error");
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const applyParsedData = async () => {
+    if (!parsedData) return;
+    try {
+      const profileUpdate = {};
+      if (parsedData.skills?.length) profileUpdate.skills = parsedData.skills.join(", ");
+      if (parsedData.summary) profileUpdate.summary = parsedData.summary;
+      if (parsedData.experience_level && !settings?.target_roles) {
+        const levelRoles = {
+          FRESHER: "Junior Developer, Entry Level Engineer",
+          ENTRY: "Software Engineer, Developer",
+          MID: "Software Engineer, Senior Developer",
+          SENIOR: "Senior Software Engineer, Tech Lead, Staff Engineer",
+        };
+        profileUpdate.target_roles = levelRoles[parsedData.experience_level] || "";
+      }
+      if (Object.keys(profileUpdate).length) {
+        await api("/profile", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(profileUpdate),
+        });
+        notify("Profile updated with parsed data!");
+        await refresh();
+      }
+      setParseOpen(false);
+      setParsedData(null);
+    } catch (error) {
+      const message = typeof error === "object" && error !== null && "message" in error
+        ? String(error.message)
+        : String(error);
+      notify(message || "Failed to update profile", "error");
+    }
   };
 
   return (
@@ -106,13 +165,73 @@ export function Resume() {
 
           <div className="resume-actions">
             <Button icon={Upload} loading={uploading} onClick={upload} disabled={!file}>Upload resume</Button>
-            {settings?.resume_name ? <Button variant="danger" icon={Trash2} onClick={() => setDeleteOpen(true)}>Remove</Button> : null}
+            {settings?.resume_name ? (
+              <>
+                <Button variant="secondary" icon={Brain} loading={parsing} onClick={parseResume} disabled={parsing}>
+                  Parse with AI
+                </Button>
+                <Button variant="danger" icon={Trash2} onClick={() => setDeleteOpen(true)}>Remove</Button>
+              </>
+            ) : null}
           </div>
 
           <div className="resume-note">
             <ShieldCheck size={17} />
             <p>Resumes are never sent automatically. Every email requires explicit approval, and the attachment is included only on confirmed sends.</p>
           </div>
+
+          {parsedData && (
+            <div className="parsed-preview">
+              <div className="parsed-preview-head">
+                <Brain size={18} />
+                <strong>Parsed resume data</strong>
+                <span>Review and apply to your profile</span>
+              </div>
+              <div className="parsed-preview-grid">
+                {parsedData.skills?.length ? (
+                  <div className="parsed-section">
+                    <div className="parsed-section-title">
+                      <Search size={15} /><span>Skills ({parsedData.skills.length})</span>
+                    </div>
+                    <div className="parsed-skills">
+                      {parsedData.skills.slice(0, 20).map((skill) => (
+                        <span key={skill} className="parsed-skill">{skill}</span>
+                      ))}
+                      {parsedData.skills.length > 20 && <span className="parsed-skill more">+{parsedData.skills.length - 20} more</span>}
+                    </div>
+                  </div>
+                ) : null}
+                {parsedData.experience_years ? (
+                  <div className="parsed-section">
+                    <div className="parsed-section-title">
+                      <FileText size={15} /><span>Experience</span>
+                    </div>
+                    <div className="parsed-value">
+                      {parsedData.experience_years} year{parsedData.experience_years !== 1 ? "s" : ""}
+                      {parsedData.experience_level ? ` · {parsedData.experience_level}` : ""}
+                    </div>
+                  </div>
+                ) : null}
+                {parsedData.education?.length ? (
+                  <div className="parsed-section">
+                    <div className="parsed-section-title">
+                      <UserRound size={15} /><span>Education</span>
+                    </div>
+                    <div className="parsed-value">{parsedData.education.join(", ")}</div>
+                  </div>
+                ) : null}
+                {parsedData.summary ? (
+                  <div className="parsed-section full-width">
+                    <div className="parsed-section-title">
+                      <Sparkles size={15} /><span>Summary</span>
+                    </div>
+                    <p className="parsed-summary">{parsedData.summary}</p>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
+
         </GlassCard>
 
         <div className="resume-side">
@@ -142,6 +261,69 @@ export function Resume() {
           </GlassCard>
         </div>
       </div>
+
+      <Modal
+        open={parseOpen}
+        onClose={() => { setParseOpen(false); setParsedData(null); }}
+        title="Parsed resume preview"
+        description="Review the extracted information and apply it to your profile."
+        width="680px"
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => { setParseOpen(false); setParsedData(null); }}>Cancel</Button>
+            <Button icon={CheckCircle2} onClick={applyParsedData}>Apply to profile</Button>
+          </>
+        )}
+      >
+        {parsedData ? (
+          <div className="parsed-preview">
+            <div className="parsed-preview-grid">
+              {parsedData.skills?.length ? (
+                <div className="parsed-section">
+                  <div className="parsed-section-title">
+                    <Search size={15} /><span>Skills ({parsedData.skills.length})</span>
+                  </div>
+                  <div className="parsed-skills">
+                    {parsedData.skills.slice(0, 30).map((skill) => (
+                      <span key={skill} className="parsed-skill">{skill}</span>
+                    ))}
+                    {parsedData.skills.length > 30 && <span className="parsed-skill more">+{parsedData.skills.length - 30} more</span>}
+                  </div>
+                </div>
+              ) : null}
+              {parsedData.experience_years ? (
+                <div className="parsed-section">
+                  <div className="parsed-section-title">
+                    <FileText size={15} /><span>Experience</span>
+                  </div>
+                  <div className="parsed-value">
+                    {parsedData.experience_years} year{parsedData.experience_years !== 1 ? "s" : ""}
+                    {parsedData.experience_level ? ` · {parsedData.experience_level}` : ""}
+                  </div>
+                </div>
+              ) : null}
+              {parsedData.education?.length ? (
+                <div className="parsed-section">
+                  <div className="parsed-section-title">
+                    <UserRound size={15} /><span>Education</span>
+                  </div>
+                  <div className="parsed-value">{parsedData.education.join(", ")}</div>
+                </div>
+              ) : null}
+              {parsedData.summary ? (
+                <div className="parsed-section full-width">
+                  <div className="parsed-section-title">
+                    <Sparkles size={15} /><span>Summary</span>
+                  </div>
+                  <p className="parsed-summary">{parsedData.summary}</p>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <EmptyState icon={LoaderCircle} title="Parsing..." description="Extracting information from your resume." />
+        )}
+      </Modal>
 
       <ConfirmDialog
         open={deleteOpen}

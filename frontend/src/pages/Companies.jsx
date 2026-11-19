@@ -23,6 +23,7 @@ import {
   EmptyState,
   FilterSelect,
   GlassCard,
+  LoadingSkeleton,
   Modal,
   PageHeader,
   SearchBar,
@@ -43,10 +44,11 @@ const emptyForm = {
 const PAGE_SIZE = 8;
 
 export function Companies() {
-  const { contacts, billing, run, busy, refresh, notify } = useWorkspace();
+  const { contacts, contactsPage, contactsLoading, billing, run, busy, refresh, notify, loadContacts, lookupContacts } = useWorkspace();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [status, setStatus] = useState("All");
   const [sort, setSort] = useState("recent");
   const [page, setPage] = useState(1);
@@ -68,36 +70,25 @@ export function Companies() {
   }, [searchParams, setSearchParams]);
 
   useEffect(() => {
-    setPage(1);
-  }, [query, status, sort]);
-
-  const counts = useMemo(() => {
-    const result = { All: contacts.length };
-    for (const contact of contacts) result[contact.status] = (result[contact.status] || 0) + 1;
-    return result;
-  }, [contacts]);
-
-  const filtered = useMemo(() => {
-    const term = query.trim().toLowerCase();
-    const rows = contacts.filter((contact) => {
-      const matchesStatus = status === "All" || contact.status === status;
-      const haystack = [contact.company_name, contact.email, contact.hr_name, contact.role, contact.location, contact.website].join(" ").toLowerCase();
-      return matchesStatus && (!term || haystack.includes(term));
-    });
-    return rows.sort((a, b) => {
-      if (sort === "company") return a.company_name.localeCompare(b.company_name);
-      if (sort === "status") return a.status.localeCompare(b.status) || a.company_name.localeCompare(b.company_name);
-      if (sort === "oldest") return new Date(a.updated_at || 0) - new Date(b.updated_at || 0);
-      return new Date(b.updated_at || 0) - new Date(a.updated_at || 0);
-    });
-  }, [contacts, query, sort, status]);
-
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const visible = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(query.trim());
+      setPage(1);
+    }, 280);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   useEffect(() => {
-    setSelected((current) => current.filter((id) => contacts.some((contact) => contact.id === id)));
-  }, [contacts]);
+    loadContacts({ q: debouncedQuery, status, sort, page, page_size: PAGE_SIZE });
+  }, [debouncedQuery, loadContacts, page, sort, status]);
+
+  const counts = useMemo(() => ({
+    ...(contactsPage.status_counts || {}),
+    All: contactsPage.status_counts?.All ?? contactsPage.unfiltered_total ?? 0,
+  }), [contactsPage]);
+
+  const unfilteredTotal = contactsPage.unfiltered_total ?? counts.All;
+  const total = contactsPage.total ?? 0;
+  const pageCount = Math.max(1, contactsPage.page_count || 1);
 
   const updateForm = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
@@ -152,8 +143,10 @@ export function Companies() {
     }
   };
 
-  const exportSelection = () => {
-    const rows = contacts.filter((contact) => selected.includes(contact.id));
+  const exportSelection = async () => {
+    if (!selected.length) return;
+    const result = await lookupContacts(selected);
+    const rows = result.rows;
     if (!rows.length) return;
     const headers = ["company_name", "email", "hr_name", "role", "status", "location", "website"];
     const csv = [
@@ -173,6 +166,11 @@ export function Companies() {
   const addSelectionToCampaign = () => {
     if (!selected.length) return;
     navigate(`/campaigns?contacts=${selected.join(",")}`);
+  };
+
+  const openContactDetail = async (id) => {
+    const result = await lookupContacts([id]);
+    if (result.rows[0]) setContactOpen(result.rows[0]);
   };
 
   const columns = [
@@ -220,7 +218,7 @@ export function Companies() {
       className: "actions-cell",
       render: (row) => (
         <div className="row-actions">
-          <button type="button" className="table-action" onClick={() => setContactOpen(row)}>View</button>
+          <button type="button" className="table-action" onClick={() => openContactDetail(row.id)}>View</button>
           <button type="button" className="table-action accent" onClick={() => navigate(`/studio?contact=${row.id}`)}>
             Draft <ArrowUpRight size={13} />
           </button>
@@ -247,7 +245,7 @@ export function Companies() {
       />
 
       <div className="stat-strip">
-        <div><span className="stat-icon tone-teal"><Users size={17} /></span><strong>{contacts.length}</strong><small>Total companies</small></div>
+        <div><span className="stat-icon tone-teal"><Users size={17} /></span><strong>{unfilteredTotal}</strong><small>Total companies</small></div>
         <div><span className="stat-icon tone-blue"><Mail size={17} /></span><strong>{counts.SENT || 0}</strong><small>Awaiting reply</small></div>
         <div><span className="stat-icon tone-violet"><Sparkles size={17} /></span><strong>{counts.DRAFTED || 0}</strong><small>Drafts ready</small></div>
         <div><span className="stat-icon tone-amber"><Building2 size={17} /></span><strong>{counts.REPLIED || 0}</strong><small>Conversations</small></div>
@@ -259,13 +257,13 @@ export function Companies() {
             <SearchBar value={query} onChange={setQuery} placeholder="Search companies, people, or emails..." className="grow" />
             <FilterSelect
               value={status}
-              onChange={setStatus}
-              options={[{ value: "All", label: `All statuses (${counts.All})` }, ...statusOptions.map((option) => ({ value: option, label: titleCase(option) }))]}
+              onChange={(value) => { setStatus(value); setPage(1); }}
+              options={[{ value: "All", label: `All statuses (${counts.All})` }, ...statusOptions.map((option) => ({ value: option, label: `${titleCase(option)} (${counts[option] || 0})` }))]}
             />
             <FilterSelect
               label="Sort"
               value={sort}
-              onChange={setSort}
+              onChange={(value) => { setSort(value); setPage(1); }}
               options={[
                 { value: "recent", label: "Recently updated" },
                 { value: "oldest", label: "Oldest first" },
@@ -282,34 +280,37 @@ export function Companies() {
                 <Button size="sm" icon={Sparkles} onClick={addSelectionToCampaign}>Add to campaign</Button>
               </>
             ) : (
-              <span className="table-hint">{filtered.length} compan{filtered.length === 1 ? "y" : "ies"}</span>
+                <span className="table-hint">{total} compan{total === 1 ? "y" : "ies"}</span>
             )}
+
           </div>
         </div>
 
-        <DataTable
-          columns={columns}
-          rows={visible}
-          selectable
-          selected={selected}
-          onSelectionChange={setSelected}
-          rowKey={(row) => row.id}
-          empty={(
-            <EmptyState
-              icon={Building2}
-              title={contacts.length ? "No companies match this view" : "Build your first outreach list"}
-              description={contacts.length ? "Try a different search or status filter." : "Import verified HR contacts from the unlocked database, add a company manually, or upload a CSV."}
-              action={!contacts.length ? <Button variant="secondary" icon={Database} loading={importingHr} onClick={importHrContacts}>{billing?.unlocked ? "Import HR contacts" : "Unlock HR database"}</Button> : null}
-            />
-          )}
-        />
+        {contactsLoading ? <LoadingSkeleton rows={8} /> : (
+          <DataTable
+            columns={columns}
+            rows={contacts}
+            selectable
+            selected={selected}
+            onSelectionChange={setSelected}
+            rowKey={(row) => row.id}
+            empty={(
+              <EmptyState
+                icon={Building2}
+                title={unfilteredTotal ? "No companies match this view" : "Build your first outreach list"}
+                description={unfilteredTotal ? "Try a different search or status filter." : "Import verified HR contacts from the unlocked database, add a company manually, or upload a CSV."}
+                action={!unfilteredTotal ? <Button variant="secondary" icon={Database} loading={importingHr} onClick={importHrContacts}>{billing?.unlocked ? "Import HR contacts" : "Unlock HR database"}</Button> : null}
+              />
+            )}
+          />
+        )}
 
         <div className="table-pagination">
-          <span>Showing {visible.length ? (page - 1) * PAGE_SIZE + 1 : 0}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}</span>
+          <span>Showing {contacts.length ? (page - 1) * PAGE_SIZE + 1 : 0}–{Math.min(page * PAGE_SIZE, total)} of {total}</span>
           <div>
-            <Button variant="ghost" size="sm" disabled={page === 1} onClick={() => setPage((current) => current - 1)}>Previous</Button>
+            <Button variant="ghost" size="sm" disabled={contactsLoading || page === 1} onClick={() => setPage((current) => current - 1)}>Previous</Button>
             <span className="page-indicator">{page} / {pageCount}</span>
-            <Button variant="ghost" size="sm" disabled={page >= pageCount} onClick={() => setPage((current) => current + 1)}>Next</Button>
+            <Button variant="ghost" size="sm" disabled={contactsLoading || page >= pageCount} onClick={() => setPage((current) => current + 1)}>Next</Button>
           </div>
         </div>
       </GlassCard>

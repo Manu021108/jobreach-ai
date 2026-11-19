@@ -30,7 +30,7 @@ import { api, post } from "../lib/api";
 import { money } from "../lib/format";
 
 export function Unlock() {
-  const { hrDatabase, billing, contacts, refresh, notify } = useWorkspace();
+  const { hrDatabase, billing, dashboard, analytics, refresh, notify } = useWorkspace();
   const [query, setQuery] = useState("");
   const [role, setRole] = useState("");
   const [verified, setVerified] = useState("all");
@@ -125,6 +125,7 @@ export function Unlock() {
   const verifiedTotal = data?.verified_total ?? hrDatabase?.verified_total ?? 0;
   const filteredTotal = data?.filtered_total ?? 0;
   const pageCount = data?.page_count || 1;
+  const workspaceContactTotal = dashboard?.stats?.contacts ?? analytics?.totals?.contacts ?? 0;
 
   const columns = useMemo(() => [
     {
@@ -235,11 +236,11 @@ export function Unlock() {
         actions={<Button icon={Download} loading={importing} onClick={importContacts}>Import all contacts</Button>}
       />
 
-      {contacts.length < total ? (
+      {workspaceContactTotal < total ? (
         <GlassCard className="safety-banner">
           <span className="safety-icon"><Download size={20} /></span>
           <div>
-            <strong>{contacts.length ? `${contacts.length.toLocaleString()} of ${total.toLocaleString()} HR contacts are in Companies` : "Unlocked, but Companies is still empty"}</strong>
+            <strong>{workspaceContactTotal ? `${workspaceContactTotal.toLocaleString()} of ${total.toLocaleString()} HR contacts are in Companies` : "Unlocked, but Companies is still empty"}</strong>
             <p>Import the full database once to start drafting and sending outreach to every contact.</p>
           </div>
           <Button loading={importing} onClick={importContacts} icon={Download}>Import all contacts</Button>

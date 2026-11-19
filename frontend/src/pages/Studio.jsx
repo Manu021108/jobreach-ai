@@ -22,6 +22,7 @@ import {
   Button,
   EmptyState,
   GlassCard,
+  LoadingSkeleton,
   Modal,
   PageHeader,
   SearchBar,
@@ -33,11 +34,28 @@ import { api, post, put } from "../lib/api";
 import { formatDate } from "../lib/format";
 import { generationModes } from "../lib/navigation";
 
+const PAGE_SIZE = 8;
+
 export function Studio() {
-  const { contacts, drafts, run, busy, notify, settings, refresh } = useWorkspace();
+  const {
+    contacts,
+    contactsPage,
+    contactsLoading,
+    drafts,
+    run,
+    busy,
+    notify,
+    settings,
+    refresh,
+    loadContacts,
+    getContact,
+  } = useWorkspace();
   const [searchParams] = useSearchParams();
   const appliedQuery = useRef("");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [hydratedContact, setHydratedContact] = useState(null);
   const [selectedContactId, setSelectedContactId] = useState(null);
   const [selectedDraftId, setSelectedDraftId] = useState(null);
   const [mode, setMode] = useState("general");
@@ -53,50 +71,82 @@ export function Studio() {
   const [reviewed, setReviewed] = useState(false);
   const [sending, setSending] = useState(false);
 
-  const eligibleContacts = useMemo(
-    () => contacts.filter((contact) => !contact.opted_out),
-    [contacts],
-  );
-
-  const filteredContacts = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    return eligibleContacts.filter((contact) => !term || `${contact.company_name} ${contact.hr_name} ${contact.email} ${contact.role}`.toLowerCase().includes(term));
-  }, [eligibleContacts, search]);
+  const selectedContact = contacts.find((item) => item.id === selectedContactId)
+    || (hydratedContact?.id === selectedContactId ? hydratedContact : null);
 
   useEffect(() => {
-    if (selectedContactId || !eligibleContacts.length) return;
-    setSelectedContactId(eligibleContacts[0].id);
-  }, [eligibleContacts, selectedContactId]);
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
+      setPage(1);
+    }, 280);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    loadContacts({ q: debouncedSearch, eligible: true, page, page_size: PAGE_SIZE, sort: "recent" });
+  }, [debouncedSearch, loadContacts, page]);
+
+  useEffect(() => {
+    if (contactsLoading || selectedContactId || !contacts.length) return;
+    if (searchParams.has("contact") || searchParams.has("draft")) return;
+    setSelectedContactId(contacts[0].id);
+  }, [contacts, contactsLoading, searchParams, selectedContactId]);
 
   useEffect(() => {
     if (!selectedContactId) return;
-    const contact = contacts.find((item) => item.id === selectedContactId);
-    setContext(contact?.company_context || "");
-  }, [contacts, selectedContactId]);
+    setContext(selectedContact?.company_context || "");
+  }, [selectedContact?.company_context, selectedContactId]);
 
   useEffect(() => {
     const requestedDraft = Number(searchParams.get("draft"));
     const requestedContact = Number(searchParams.get("contact"));
     const queryKey = `${requestedContact || ""}:${requestedDraft || ""}`;
     if (!queryKey || queryKey === ":" || appliedQuery.current === queryKey) return;
-    if (requestedDraft) {
-      const draft = drafts.find((item) => item.id === requestedDraft);
-      if (draft) {
-        setSelectedContactId(draft.contact_id);
-        setSelectedDraftId(draft.id);
-        setSubject(draft.subject);
-        setBody(draft.body);
-        appliedQuery.current = queryKey;
-        return;
+    let cancelled = false;
+    const hydrate = async () => {
+      if (requestedDraft) {
+        const draft = drafts.find((item) => item.id === requestedDraft);
+        if (draft) {
+          let contact = null;
+          try {
+            contact = await getContact(draft.contact_id);
+          } catch {
+            contact = null;
+          }
+          if (cancelled) return;
+          if (contact) {
+            setSelectedContactId(contact.id);
+            setHydratedContact(contact);
+          }
+          setSelectedDraftId(draft.id);
+          setSubject(draft.subject);
+          setBody(draft.body);
+          appliedQuery.current = queryKey;
+          return;
+        }
       }
-    }
-    if (requestedContact && contacts.some((contact) => contact.id === requestedContact)) {
-      setSelectedContactId(requestedContact);
-      const latest = drafts.find((draft) => draft.contact_id === requestedContact);
-      setSelectedDraftId(latest?.id || null);
-      appliedQuery.current = queryKey;
-    }
-  }, [contacts, drafts, searchParams]);
+      if (requestedContact) {
+        let contact = null;
+        try {
+          contact = await getContact(requestedContact);
+        } catch {
+          contact = null;
+        }
+        if (cancelled) return;
+        if (contact) {
+          setSelectedContactId(requestedContact);
+          setHydratedContact(contact);
+          const latest = drafts.find((draft) => draft.contact_id === requestedContact);
+          setSelectedDraftId(latest?.id || null);
+          appliedQuery.current = queryKey;
+        }
+      }
+    };
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [drafts, getContact, searchParams]);
 
   const contactDrafts = useMemo(
     () => drafts.filter((draft) => draft.contact_id === selectedContactId),
@@ -110,7 +160,6 @@ export function Studio() {
     setSelectedDraftId(latest?.id || null);
   }, [contactDrafts, selectedContactId, selectedDraftId]);
 
-  const selectedContact = contacts.find((contact) => contact.id === selectedContactId) || null;
   const selectedDraft = drafts.find((draft) => draft.id === selectedDraftId) || null;
   const isApproved = selectedDraft?.status === "APPROVED";
   const isSent = ["SENT", "REPLIED"].includes(selectedContact?.status);
@@ -140,8 +189,9 @@ export function Studio() {
     setBody(selectedDraft.body);
   }, [selectedDraft, selectedContactId]);
 
-  const selectContact = (contactId) => {
-    setSelectedContactId(contactId);
+  const selectContact = (contact) => {
+    setSelectedContactId(contact.id);
+    setHydratedContact(contact);
     setSelectedDraftId(null);
     setSubject("");
     setBody("");
@@ -179,11 +229,10 @@ export function Studio() {
       return;
     }
     if (selectedDraftId) {
-      const result = await run(
+      await run(
         () => put(`/drafts/${selectedDraftId}`, { subject, body }),
         "Draft saved.",
       );
-      if (result) refresh();
     } else {
       const result = await run(
         () => post(`/contacts/${selectedContact.id}/drafts`, { subject, body }),
@@ -202,11 +251,10 @@ export function Studio() {
       notify("Save your latest edits before approval.", "error");
       return;
     }
-    const result = await run(
+    await run(
       () => post(`/drafts/${selectedDraftId}/approve`, {}),
       "Draft approved. Preview the final email before sending.",
     );
-    if (result) refresh();
   };
 
   const handleContextSave = async () => {
@@ -216,6 +264,7 @@ export function Studio() {
       () => put(`/contacts/${selectedContact.id}/context`, { company_context: context }),
       "Company context updated.",
     );
+    if (result?.id) setHydratedContact(result);
     setSavingContext(false);
     return result;
   };
@@ -249,6 +298,13 @@ export function Studio() {
       setTypedRecipient("");
       setReviewed(false);
       await refresh();
+      let updated = null;
+      try {
+        updated = await getContact(selectedContact.id);
+      } catch {
+        updated = null;
+      }
+      if (updated) setHydratedContact(updated);
     } catch (error) {
       notify(error.message, "error");
     } finally {
@@ -283,15 +339,15 @@ export function Studio() {
 
       <div className="studio-layout">
         <GlassCard className="studio-contacts">
-          <SectionHeading title="Recipients" description={`${eligibleContacts.length} eligible contacts`} />
+          <SectionHeading title="Recipients" description={`${contactsPage.total || 0} eligible contacts`} />
           <SearchBar value={search} onChange={setSearch} placeholder="Find a contact..." />
           <div className="studio-contact-list">
-            {filteredContacts.length ? filteredContacts.map((contact) => (
+            {contactsLoading ? <LoadingSkeleton rows={5} /> : contacts.length ? contacts.map((contact) => (
               <button
                 type="button"
                 key={contact.id}
                 className={`studio-contact ${selectedContactId === contact.id ? "active" : ""}`.trim()}
-                onClick={() => selectContact(contact.id)}
+                onClick={() => selectContact(contact)}
               >
                 <Avatar name={contact.company_name} size="sm" />
                 <span className="studio-contact-copy">
@@ -301,6 +357,13 @@ export function Studio() {
                 <StatusBadge status={contact.status} dot={false} />
               </button>
             )) : <EmptyState compact icon={UserRound} title="No eligible contacts" description="Add a company first, then return to the studio." />}
+          </div>
+          <div className="table-pagination studio-pagination">
+            <span>Page {page} / {Math.max(1, contactsPage.page_count || 1)}</span>
+            <div>
+              <Button variant="ghost" size="sm" disabled={contactsLoading || page <= 1} onClick={() => setPage((current) => current - 1)}>Previous</Button>
+              <Button variant="ghost" size="sm" disabled={contactsLoading || page >= (contactsPage.page_count || 1)} onClick={() => setPage((current) => current + 1)}>Next</Button>
+            </div>
           </div>
           <div className="studio-queue">
             <div className="studio-queue-head"><span>Draft queue</span><strong>{contactDrafts.length}</strong></div>

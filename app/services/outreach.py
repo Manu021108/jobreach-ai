@@ -11,6 +11,25 @@ from app.services import audit, security
 from app.utils import website_from_email
 
 
+CONTACT_STATUSES = frozenset({
+    "PENDING", "DRAFTED", "SENT", "REPLIED", "FAILED",
+    "NOT_INTERESTED", "OPTED_OUT", "ARCHIVED",
+})
+
+_CONTACT_SEARCH_COLUMNS = (
+    Contact.company_name, Contact.email, Contact.hr_name,
+    Contact.role, Contact.location, Contact.website,
+)
+
+_CONTACT_SORT_ORDERS = {
+    "recent": (Contact.updated_at.desc(), Contact.id.desc()),
+    "created": (Contact.created_at.desc(), Contact.id.desc()),
+    "oldest": (Contact.created_at.asc(), Contact.id.asc()),
+    "company": (Contact.company_name.asc(), Contact.id.asc()),
+    "status": (Contact.status.asc(), Contact.id.asc()),
+}
+
+
 def _owned(model, owner_id):
     return model.owner_id == int(owner_id) if owner_id is not None else True
 
@@ -140,6 +159,89 @@ def get_contacts(status=None, owner_id=None):
         if status and status != "All":
             stmt = stmt.where(Contact.status == status)
         return list(db.scalars(stmt).all())
+
+
+def _contact_owner(owner_id):
+    if owner_id is None:
+        return Contact.owner_id.is_(None)
+    return Contact.owner_id == int(owner_id)
+
+
+def _contact_conditions(q="", eligible=False):
+    conditions = []
+    term = str(q or "").strip()[:200]
+    if term:
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        conditions.append(or_(*[
+            column.ilike(pattern, escape="\\") for column in _CONTACT_SEARCH_COLUMNS
+        ]))
+    if eligible:
+        from app.services.campaign import BLOCKED_STATUSES
+        conditions.append(Contact.opted_out.is_(False))
+        conditions.append(Contact.status.notin_(BLOCKED_STATUSES))
+    return conditions
+
+
+def list_paged_contacts(owner_id, q="", status="All", sort="recent", page=1, page_size=25, eligible=False):
+    page = max(1, int(page))
+    page_size = min(max(1, int(page_size)), 100)
+    base = [_contact_owner(owner_id), *_contact_conditions(q, eligible)]
+    conditions = list(base)
+    if status and status != "All":
+        conditions.append(Contact.status == status)
+    order = _CONTACT_SORT_ORDERS.get(sort, _CONTACT_SORT_ORDERS["recent"])
+    with SessionLocal() as db:
+        total = db.scalar(select(func.count(Contact.id)).where(*conditions)) or 0
+        unfiltered_total = db.scalar(
+            select(func.count(Contact.id)).where(_contact_owner(owner_id))
+        ) or 0
+        grouped = dict(db.execute(
+            select(Contact.status, func.count(Contact.id)).where(*base).group_by(Contact.status)
+        ).all())
+        rows = list(db.scalars(
+            select(Contact)
+            .where(*conditions)
+            .order_by(*order)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all())
+    status_counts = {"All": sum(grouped.values())}
+    status_counts.update({value: grouped.get(value, 0) for value in sorted(CONTACT_STATUSES)})
+    for value, count in grouped.items():
+        status_counts.setdefault(value, count)
+    return {
+        "rows": rows,
+        "total": total,
+        "unfiltered_total": unfiltered_total,
+        "page": page,
+        "page_size": page_size,
+        "page_count": (total + page_size - 1) // page_size,
+        "status_counts": status_counts,
+    }
+
+
+def lookup_contacts(ids, owner_id):
+    requested = list(dict.fromkeys(int(value) for value in list(ids or [])[:200]))
+    if not requested:
+        return []
+    with SessionLocal() as db:
+        rows = list(db.scalars(
+            select(Contact).where(_contact_owner(owner_id), Contact.id.in_(requested))
+        ).all())
+    by_id = {row.id: row for row in rows}
+    return [by_id[value] for value in requested if value in by_id]
+
+
+def recent_contacts(owner_id, limit=15):
+    limit = min(max(int(limit), 1), 50)
+    with SessionLocal() as db:
+        return list(db.scalars(
+            select(Contact)
+            .where(_contact_owner(owner_id))
+            .order_by(Contact.updated_at.desc(), Contact.id.desc())
+            .limit(limit)
+        ).all())
 
 
 def get_contact(contact_id, owner_id=None):
@@ -794,7 +896,20 @@ def analytics_summary(owner_id, days=30):
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=days - 1)
     with SessionLocal() as db:
-        contacts = list(db.scalars(select(Contact).where(_owned(Contact, owner_id))).all())
+        owned_contacts = _owned(Contact, owner_id)
+        contact_totals = db.execute(
+            select(
+                func.count(Contact.id),
+                func.count().filter(Contact.status == "REPLIED"),
+                func.count().filter(Contact.opted_out.is_(True)),
+            ).where(owned_contacts)
+        ).one()
+        status_counts = dict(db.execute(
+            select(Contact.status, func.count(Contact.id))
+            .where(owned_contacts)
+            .group_by(Contact.status)
+            .order_by(Contact.status)
+        ).all())
         drafts = list(db.scalars(
             select(EmailDraft)
             .options(joinedload(EmailDraft.contact))
@@ -862,9 +977,6 @@ def analytics_summary(owner_id, days=30):
                 row["replies"] += 1
 
     due = sum(1 for item in open_followups if _as_utc(item.followup_due_at) and _as_utc(item.followup_due_at) <= now)
-    status_counts = {}
-    for contact in contacts:
-        status_counts[contact.status] = status_counts.get(contact.status, 0) + 1
     draft_counts = {}
     for draft in drafts:
         draft_counts[draft.status] = draft_counts.get(draft.status, 0) + 1
@@ -873,15 +985,15 @@ def analytics_summary(owner_id, days=30):
         "days": days,
         "series": list(buckets.values()),
         "totals": {
-            "contacts": len(contacts),
+            "contacts": contact_totals[0],
             "jobs": len(jobs),
             "active_jobs": sum(1 for job in jobs if job.active),
             "verified_jobs": sum(1 for job in jobs if job.verified_at),
             "drafts": len(drafts),
             "approved": draft_counts.get("APPROVED", 0),
             "sent": sum(1 for event in events if event.event_type == "SENT"),
-            "replies": sum(1 for contact in contacts if contact.status == "REPLIED"),
-            "opted_out": sum(1 for contact in contacts if contact.opted_out),
+            "replies": contact_totals[1],
+            "opted_out": contact_totals[2],
             "followups_due": due,
             "followups_upcoming": len(open_followups) - due,
         },

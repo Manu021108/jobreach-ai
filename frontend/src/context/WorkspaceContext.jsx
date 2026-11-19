@@ -1,7 +1,48 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { api } from "../lib/api";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { api, post } from "../lib/api";
 
 const WorkspaceContext = createContext(null);
+
+const EMPTY_CONTACTS_PAGE = {
+  rows: [],
+  total: 0,
+  unfiltered_total: 0,
+  page: 1,
+  page_size: 25,
+  page_count: 1,
+  status_counts: {},
+};
+
+const DEFAULT_CONTACT_PARAMS = {
+  q: "",
+  status: "All",
+  sort: "recent",
+  page: 1,
+  page_size: 25,
+  eligible: false,
+};
+
+function normalizeContactParams(params = {}) {
+  return {
+    q: params.q ?? DEFAULT_CONTACT_PARAMS.q,
+    status: params.status ?? DEFAULT_CONTACT_PARAMS.status,
+    sort: params.sort ?? DEFAULT_CONTACT_PARAMS.sort,
+    page: Math.max(1, Number(params.page) || 1),
+    page_size: Math.max(1, Number(params.page_size) || DEFAULT_CONTACT_PARAMS.page_size),
+    eligible: Boolean(params.eligible),
+  };
+}
+
+function buildContactQuery(params) {
+  const query = new URLSearchParams();
+  query.set("q", params.q);
+  query.set("status", params.status);
+  query.set("sort", params.sort);
+  query.set("page", String(params.page));
+  query.set("page_size", String(params.page_size));
+  query.set("eligible", params.eligible ? "true" : "false");
+  return query.toString();
+}
 
 function getInitialTheme() {
   const stored = localStorage.getItem("jobreach-theme");
@@ -12,6 +53,8 @@ function getInitialTheme() {
 export function WorkspaceProvider({ user, setUser, children }) {
   const [dashboard, setDashboard] = useState(null);
   const [contacts, setContacts] = useState([]);
+  const [contactsPage, setContactsPage] = useState(EMPTY_CONTACTS_PAGE);
+  const [contactsLoading, setContactsLoading] = useState(false);
   const [drafts, setDrafts] = useState([]);
   const [followups, setFollowups] = useState([]);
   const [auditLog, setAuditLog] = useState([]);
@@ -31,6 +74,10 @@ export function WorkspaceProvider({ user, setUser, children }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     localStorage.getItem("jobreach-sidebar") === "collapsed",
   );
+
+  const contactParamsRef = useRef(null);
+  const contactRequestRef = useRef(null);
+  const contactRequestSeqRef = useRef(0);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -54,11 +101,68 @@ export function WorkspaceProvider({ user, setUser, children }) {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const refresh = useCallback(async () => {
+  const loadContacts = useCallback(async (params = {}, options = {}) => {
+    const normalized = normalizeContactParams(params);
+    const key = JSON.stringify(normalized);
+    const silent = options.silent === true;
+
+    if (!silent) {
+      contactParamsRef.current = normalized;
+      if (contactRequestRef.current?.key === key) return contactRequestRef.current.promise;
+      setContactsLoading(true);
+    }
+
+    const seq = silent ? 0 : ++contactRequestSeqRef.current;
+    const execute = async () => {
+      try {
+        const result = await api(`/contacts/paged?${buildContactQuery(normalized)}`);
+        const page = result && typeof result === "object" ? result : EMPTY_CONTACTS_PAGE;
+        if (!silent && seq === contactRequestSeqRef.current) {
+          setContacts(Array.isArray(page.rows) ? page.rows : []);
+          setContactsPage(page);
+        }
+        return page;
+      } catch (requestError) {
+        if (!silent && seq === contactRequestSeqRef.current) {
+          setError(requestError.message);
+          notify(requestError.message, "error");
+        }
+        return { ...EMPTY_CONTACTS_PAGE, page: normalized.page, page_size: normalized.page_size };
+      } finally {
+        if (!silent && contactRequestRef.current?.key === key) contactRequestRef.current = null;
+        if (!silent && seq === contactRequestSeqRef.current) setContactsLoading(false);
+      }
+    };
+
+    const promise = execute();
+    if (!silent) contactRequestRef.current = { key, promise };
+    return promise;
+  }, [notify]);
+
+  const reloadContacts = useCallback(async () => {
+    if (!contactParamsRef.current) return null;
+    return loadContacts(contactParamsRef.current);
+  }, [loadContacts]);
+
+  const getContact = useCallback((id) => api(`/contacts/${id}`), []);
+
+  const lookupContacts = useCallback(async (ids) => {
+    const unique = [...new Set((ids || []).filter((id) => id !== null && id !== undefined))];
+    if (!unique.length) return { rows: [] };
+    try {
+      const result = await post("/contacts/lookup", { ids: unique });
+      return { rows: Array.isArray(result?.rows) ? result.rows : [] };
+    } catch (requestError) {
+      setError(requestError.message);
+      notify(requestError.message, "error");
+      return { rows: [] };
+    }
+  }, [notify]);
+
+  const refresh = useCallback(async (options = {}) => {
     try {
       const [
         overview,
-        contactRows,
         draftRows,
         followupRows,
         config,
@@ -73,7 +177,6 @@ export function WorkspaceProvider({ user, setUser, children }) {
         jobUnread,
       ] = await Promise.all([
         api("/dashboard"),
-        api("/contacts"),
         api("/drafts"),
         api("/followups"),
         api("/settings"),
@@ -88,7 +191,6 @@ export function WorkspaceProvider({ user, setUser, children }) {
         api("/job-notifications/unread-count"),
       ]);
       setDashboard(overview);
-      setContacts(contactRows);
       setDrafts(draftRows);
       setFollowups(followupRows);
       setSettings(config);
@@ -102,15 +204,16 @@ export function WorkspaceProvider({ user, setUser, children }) {
       setJobNotifications(jobNotificationRows);
       setJobUnreadCount(jobUnread?.count || 0);
       setError("");
+      if (options.skipContacts !== true && contactParamsRef.current) await reloadContacts();
       return true;
     } catch (requestError) {
       setError(requestError.message);
       return false;
     }
-  }, []);
+  }, [reloadContacts]);
 
   useEffect(() => {
-    if (user) refresh();
+    if (user) refresh({ skipContacts: true });
   }, [user, refresh]);
 
   const refreshJobNotifications = useCallback(async () => {
@@ -160,12 +263,15 @@ export function WorkspaceProvider({ user, setUser, children }) {
   const signOut = useCallback(async () => {
     try {
       await api("/auth/logout", { method: "POST" });
-    } catch {
-      /* keep local sign-out resilient */
-    }
+    } catch {}
+    contactRequestSeqRef.current += 1;
+    contactParamsRef.current = null;
+    contactRequestRef.current = null;
     setUser(null);
     setDashboard(null);
     setContacts([]);
+    setContactsPage(EMPTY_CONTACTS_PAGE);
+    setContactsLoading(false);
     setDrafts([]);
     setFollowups([]);
     setAuditLog([]);
@@ -190,6 +296,12 @@ export function WorkspaceProvider({ user, setUser, children }) {
       setUser,
       dashboard,
       contacts,
+      contactsPage,
+      contactsLoading,
+      loadContacts,
+      getContact,
+      lookupContacts,
+      reloadContacts,
       drafts,
       followups,
       auditLog,
@@ -224,6 +336,12 @@ export function WorkspaceProvider({ user, setUser, children }) {
       setUser,
       dashboard,
       contacts,
+      contactsPage,
+      contactsLoading,
+      loadContacts,
+      getContact,
+      lookupContacts,
+      reloadContacts,
       drafts,
       followups,
       auditLog,

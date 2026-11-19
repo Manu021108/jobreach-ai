@@ -3,6 +3,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.models import Resume, StudentProfile, User
 from app.db.session import SessionLocal
+from app.services.resume_parser import ParsedResume, parse_resume, merge_parsed_into_profile
 
 
 FIELDS = {
@@ -56,7 +57,16 @@ def save_resume(user_id, filename, content):
         row.size = len(content)
         db.commit()
         db.refresh(row)
-        return row
+    # Parse resume and merge into profile
+    try:
+        parsed = parse_resume(content)
+        existing = profile_dict(user_id) or {}
+        merged = merge_parsed_into_profile(parsed, existing)
+        save_profile(user_id, merged)
+    except Exception:
+        # Silently fail - parsing is best-effort
+        pass
+    return row
 
 
 def delete_resume(user_id):
