@@ -1,6 +1,16 @@
-import { ArrowUpRight, ExternalLink, MapPin, Sparkles, Target } from "lucide-react";
+import { ArrowUpRight, ExternalLink, MapPin, Sparkles, Target, Wallet } from "lucide-react";
 import { Avatar, Button, GlassCard, ProgressRing, StatusBadge } from "./ui";
 import { formatShortDate, parseEvidence } from "../lib/format";
+
+function salaryLabel(job) {
+  if (!job.salary_min && !job.salary_max) return "";
+  const symbol = { USD: "$", EUR: "€", GBP: "£", INR: "₹" }[job.salary_currency] || "";
+  const short = (value) => (value >= 1000 ? `${Math.round(value / 1000)}k` : String(value));
+  if (job.salary_min && job.salary_max && job.salary_min !== job.salary_max) {
+    return `${symbol}${short(job.salary_min)}–${symbol}${short(job.salary_max)}`;
+  }
+  return `${symbol}${short(job.salary_max || job.salary_min)}`;
+}
 
 export function JobCard({ job, onOpen, onMatch, onDraft, matching, drafting }) {
   const evidence = parseEvidence(job.evidence);
@@ -19,6 +29,9 @@ export function JobCard({ job, onOpen, onMatch, onDraft, matching, drafting }) {
       <div className="job-meta">
         <span><MapPin size={14} /> {job.location || "Location flexible"}</span>
         <span><ExternalLink size={14} /> {job.source || "Company careers"}</span>
+        {job.experience_level && job.experience_level !== "UNKNOWN" ? <span>{job.experience_level}</span> : null}
+        {salaryLabel(job) ? <span><Wallet size={14} /> {salaryLabel(job)}</span> : null}
+        {job.posted_at ? <span>Posted {formatShortDate(job.posted_at)}</span> : null}
         {job.verified_at ? <span className="verified"><Target size={14} /> Verified {formatShortDate(job.verified_at)}</span> : null}
       </div>
       <p className="job-description">{job.description ? `${job.description.slice(0, 170)}${job.description.length > 170 ? "…" : ""}` : "Open the role to review the full description and matching context."}</p>

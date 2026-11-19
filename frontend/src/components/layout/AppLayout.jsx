@@ -17,12 +17,6 @@ export function AppLayout() {
 
   return (
     <div className="app-shell">
-      <div className="ambient" aria-hidden="true">
-        <span className="ambient-orb orb-one" />
-        <span className="ambient-orb orb-two" />
-        <span className="ambient-orb orb-three" />
-        <span className="ambient-grid" />
-      </div>
       <Sidebar mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} />
       <div className="app-main">
         <Topbar onOpenMobile={() => setMobileOpen(true)} />

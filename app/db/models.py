@@ -38,6 +38,12 @@ class User(Base):
     resume: Mapped["Resume | None"] = relationship(
         back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
+    job_alerts: Mapped[list["JobAlert"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    job_notifications: Mapped[list["JobNotification"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class StudentProfile(Base):
@@ -181,7 +187,7 @@ class JobPosting(Base):
     __tablename__ = "job_postings"
     __table_args__ = (UniqueConstraint("contact_id", "url", name="uq_job_contact_url"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), nullable=False, index=True)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id"), nullable=True, index=True)
     company_name: Mapped[str] = mapped_column(String(200), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     location: Mapped[str] = mapped_column(String(200), default="")
@@ -196,8 +202,19 @@ class JobPosting(Base):
     match_reasons: Mapped[str] = mapped_column(Text, default="")
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     owner_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    salary_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    salary_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    salary_currency: Mapped[str] = mapped_column(String(10), default="")
+    salary_period: Mapped[str] = mapped_column(String(20), default="")
+    experience_level: Mapped[str] = mapped_column(String(30), default="", index=True)
+    employment_type: Mapped[str] = mapped_column(String(50), default="")
+    remote: Mapped[bool] = mapped_column(Boolean, default=False)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    contact: Mapped[Contact] = relationship(back_populates="jobs")
+    contact: Mapped["Contact | None"] = relationship(back_populates="jobs")
     user: Mapped["User | None"] = relationship(back_populates="jobs")
 
 class EmailDraft(Base):
@@ -243,3 +260,46 @@ class AuditLog(Base):
     details: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     contact: Mapped["Contact | None"] = relationship()
+
+
+class JobAlert(Base):
+    __tablename__ = "job_alerts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    query: Mapped[str] = mapped_column(String(300), default="")
+    skills: Mapped[str] = mapped_column(Text, default="")
+    location: Mapped[str] = mapped_column(String(200), default="")
+    experience: Mapped[str] = mapped_column(String(200), default="")
+    salary_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fresher_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    sources: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    include_companies: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    user: Mapped["User"] = relationship(back_populates="job_alerts")
+    notifications: Mapped[list["JobNotification"]] = relationship(
+        back_populates="alert", cascade="all, delete-orphan"
+    )
+
+
+class JobNotification(Base):
+    __tablename__ = "job_notifications"
+    __table_args__ = (UniqueConstraint("owner_id", "fingerprint", name="uq_job_notification_owner_fingerprint"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    alert_id: Mapped[int | None] = mapped_column(ForeignKey("job_alerts.id"), nullable=True, index=True)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("job_postings.id"), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    message: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str] = mapped_column(String(1000), default="")
+    fingerprint: Mapped[str] = mapped_column(String(300), nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    user: Mapped["User"] = relationship(back_populates="job_notifications")
+    alert: Mapped["JobAlert | None"] = relationship(back_populates="notifications")

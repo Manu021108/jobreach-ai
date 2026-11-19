@@ -46,3 +46,21 @@ def send_password_reset_email(to, token):
         return _send(to, "Reset your JobReach AI password", body)
     except Exception:
         return False
+
+
+def send_job_alert_email(to, alert_name, jobs):
+    if not jobs:
+        return False
+    links = "\n".join(
+        f"- {job.get('title', 'Open role')} at {job.get('company_name', 'Unknown company')}\n  {job.get('url', '')}"
+        for job in jobs[:10]
+    )
+    body = (
+        f"New roles matched your '{alert_name}' job alert.\n\n"
+        f"{links}\n\n"
+        "Manage your alerts in JobReach AI."
+    )
+    try:
+        return _send(to, f"New jobs for {alert_name}", body)
+    except Exception:
+        return False

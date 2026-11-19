@@ -119,7 +119,7 @@ function Sparkline({ data = [], tone = "teal" }) {
 
 export function MetricCard({ label, value, detail, icon: Icon, tone = "teal", spark, trend }) {
   return (
-    <GlassCard className="metric-card">
+    <GlassCard className="metric-card kpi-card">
       <div className="metric-top">
         <span className={`metric-icon tone-${tone}`}>{Icon ? <Icon size={18} /> : <Sparkles size={18} />}</span>
         {trend != null ? <span className={`metric-trend ${trend >= 0 ? "positive" : "negative"}`}>{trend > 0 ? "+" : ""}{trend}%</span> : null}
@@ -154,6 +154,29 @@ export function SectionHeading({ title, description, action }) {
         {description ? <p>{description}</p> : null}
       </div>
       {action}
+    </div>
+  );
+}
+
+export function ActivityFeed({ items = [], iconFor, titleFor, detailFor, timeFor, emptyTitle = "No activity yet" }) {
+  if (!items.length) {
+    return <EmptyState compact icon={Sparkles} title={emptyTitle} description="Workspace events will appear here as you go." />;
+  }
+  return (
+    <div className="activity-feed">
+      {items.map((item, index) => {
+        const Icon = iconFor?.(item) || Sparkles;
+        return (
+          <div className="activity-feed-row" key={item.id || index}>
+            <span className="activity-feed-icon"><Icon size={14} /></span>
+            <div>
+              <strong>{titleFor?.(item) || "Activity"}</strong>
+              {detailFor?.(item) ? <p>{detailFor(item)}</p> : null}
+            </div>
+            <time>{timeFor?.(item) || ""}</time>
+          </div>
+        );
+      })}
     </div>
   );
 }

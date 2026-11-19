@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     stripe_unlock_currency: str = "inr"
     allow_free_unlock: bool = True
     hr_database_file: str = "data/hr_database.csv"
+    job_discovery_enabled: bool = True
+    job_discovery_poll_seconds: int = Field(default=900, ge=60, le=86400)
+    job_discovery_portals: str = "remotive,arbeitnow,remoteok"
+    job_discovery_max_per_source: int = Field(default=25, ge=1, le=100)
+    job_discovery_max_companies: int = Field(default=20, ge=1, le=100)
+    job_discovery_timeout_seconds: int = Field(default=8, ge=2, le=30)
+    job_alert_email_enabled: bool = False
 
     @property
     def root(self) -> Path:

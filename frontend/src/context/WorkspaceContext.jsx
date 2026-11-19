@@ -6,7 +6,7 @@ const WorkspaceContext = createContext(null);
 function getInitialTheme() {
   const stored = localStorage.getItem("jobreach-theme");
   if (stored === "light" || stored === "dark") return stored;
-  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  return "light";
 }
 
 export function WorkspaceProvider({ user, setUser, children }) {
@@ -21,6 +21,9 @@ export function WorkspaceProvider({ user, setUser, children }) {
   const [analytics, setAnalytics] = useState(null);
   const [inbox, setInbox] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
+  const [jobAlerts, setJobAlerts] = useState([]);
+  const [jobNotifications, setJobNotifications] = useState([]);
+  const [jobUnreadCount, setJobUnreadCount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [error, setError] = useState("");
@@ -33,7 +36,7 @@ export function WorkspaceProvider({ user, setUser, children }) {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("jobreach-theme", theme);
     const themeColor = document.querySelector('meta[name="theme-color"]');
-    if (themeColor) themeColor.setAttribute("content", theme === "dark" ? "#0B1220" : "#EEF2F9");
+    if (themeColor) themeColor.setAttribute("content", theme === "dark" ? "#101621" : "#F7F8FA");
   }, [theme]);
 
   useEffect(() => {
@@ -65,6 +68,9 @@ export function WorkspaceProvider({ user, setUser, children }) {
         analyticsData,
         inboxRows,
         campaignRows,
+        jobAlertRows,
+        jobNotificationRows,
+        jobUnread,
       ] = await Promise.all([
         api("/dashboard"),
         api("/contacts"),
@@ -77,6 +83,9 @@ export function WorkspaceProvider({ user, setUser, children }) {
         api("/analytics?days=30"),
         api("/inbox?limit=60"),
         api("/campaigns"),
+        api("/job-alerts"),
+        api("/job-notifications?limit=8"),
+        api("/job-notifications/unread-count"),
       ]);
       setDashboard(overview);
       setContacts(contactRows);
@@ -89,6 +98,9 @@ export function WorkspaceProvider({ user, setUser, children }) {
       setAnalytics(analyticsData);
       setInbox(inboxRows);
       setCampaigns(campaignRows);
+      setJobAlerts(jobAlertRows);
+      setJobNotifications(jobNotificationRows);
+      setJobUnreadCount(jobUnread?.count || 0);
       setError("");
       return true;
     } catch (requestError) {
@@ -100,6 +112,28 @@ export function WorkspaceProvider({ user, setUser, children }) {
   useEffect(() => {
     if (user) refresh();
   }, [user, refresh]);
+
+  const refreshJobNotifications = useCallback(async () => {
+    const [rows, count] = await Promise.all([
+      api("/job-notifications?limit=8"),
+      api("/job-notifications/unread-count"),
+    ]);
+    setJobNotifications(rows);
+    setJobUnreadCount(count?.count || 0);
+  }, []);
+
+  const markJobNotificationRead = useCallback(async (id) => {
+    await api(`/job-notifications/${id}/read`, { method: "POST" });
+    setJobNotifications((current) => current.map((item) => item.id === id ? { ...item, read: true, read_at: new Date().toISOString() } : item));
+    setJobUnreadCount((current) => Math.max(0, current - 1));
+  }, []);
+
+  const markAllJobNotificationsRead = useCallback(async () => {
+    const result = await api("/job-notifications/read-all", { method: "POST" });
+    setJobNotifications((current) => current.map((item) => ({ ...item, read: true })));
+    setJobUnreadCount(0);
+    return result;
+  }, []);
 
   const run = useCallback(
     async (operation, successMessage, options = {}) => {
@@ -141,6 +175,9 @@ export function WorkspaceProvider({ user, setUser, children }) {
     setAnalytics(null);
     setInbox([]);
     setCampaigns([]);
+    setJobAlerts([]);
+    setJobNotifications([]);
+    setJobUnreadCount(0);
   }, [setUser]);
 
   const toggleTheme = useCallback(() => {
@@ -162,6 +199,12 @@ export function WorkspaceProvider({ user, setUser, children }) {
       analytics,
       inbox,
       campaigns,
+      jobAlerts,
+      jobNotifications,
+      jobUnreadCount,
+      refreshJobNotifications,
+      markJobNotificationRead,
+      markAllJobNotificationsRead,
       busy,
       toast,
       setToast,
@@ -190,6 +233,12 @@ export function WorkspaceProvider({ user, setUser, children }) {
       analytics,
       inbox,
       campaigns,
+      jobAlerts,
+      jobNotifications,
+      jobUnreadCount,
+      refreshJobNotifications,
+      markJobNotificationRead,
+      markAllJobNotificationsRead,
       busy,
       toast,
       error,

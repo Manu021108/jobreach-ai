@@ -28,7 +28,8 @@ from app.services import billing as billing_service
 from app.services import campaign as campaign_service
 from app.services import compliance
 from app.services import followups as followup_service
-from app.services import gmail_service, gmail_tokens, hr_database, profile_service
+from app.services import gmail_service, gmail_tokens, hr_database, job_alerts, profile_service
+from app.services import job_discovery_engine, job_discovery_worker
 from app.services.ai_writer import AIWriter
 from app.services.gmail_service import GmailService
 from app.services.security import (
@@ -77,9 +78,11 @@ async def lifespan(_: FastAPI):
         auto_sender.start_worker()
     if settings.followup_auto_draft_enabled:
         followup_service.start_worker()
+    job_discovery_worker.start_worker()
     try:
         yield
     finally:
+        job_discovery_worker.stop_worker()
         followup_service.stop_worker()
         auto_sender.stop_worker()
 
@@ -192,6 +195,49 @@ class HRImportInput(BaseModel):
     limit: int = Field(default=100, ge=1, le=5000)
 
 
+class JobDiscoveryInput(BaseModel):
+    query: str = Field(default="", max_length=300)
+    company: str = Field(default="", max_length=200)
+    skills: str | list[str] | None = None
+    location: str = Field(default="", max_length=200)
+    experience: str | list[str] | None = None
+    salary_min: int | None = Field(default=None, ge=0)
+    fresher_only: bool = False
+    sources: str | list[str] | None = None
+    include_companies: bool = True
+    posted_within_days: int | None = Field(default=None, ge=1, le=365)
+    min_match_score: int | None = Field(default=None, ge=0, le=100)
+    sort: str = Field(default="newest", max_length=20)
+
+
+class JobAlertInput(BaseModel):
+    name: str = Field(default="New opportunities", min_length=1, max_length=200)
+    query: str = Field(default="", max_length=300)
+    skills: str | list[str] | None = None
+    location: str = Field(default="", max_length=200)
+    experience: str | list[str] | None = None
+    salary_min: int | None = Field(default=None, ge=0)
+    fresher_only: bool = False
+    sources: str | list[str] | None = None
+    active: bool = True
+    email_enabled: bool = False
+    include_companies: bool = True
+
+
+class JobAlertUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    query: str | None = Field(default=None, max_length=300)
+    skills: str | list[str] | None = None
+    location: str | None = Field(default=None, max_length=200)
+    experience: str | list[str] | None = None
+    salary_min: int | None = Field(default=None, ge=0)
+    fresher_only: bool | None = None
+    sources: str | list[str] | None = None
+    active: bool | None = None
+    email_enabled: bool | None = None
+    include_companies: bool | None = None
+
+
 def _iso(value):
     return value.isoformat() if value else None
 
@@ -254,24 +300,7 @@ def _contact_dict(contact):
 def _job_dict(job):
     if not job:
         return None
-    return {
-        "id": job.id,
-        "contact_id": job.contact_id,
-        "company_name": job.company_name,
-        "title": job.title,
-        "location": job.location,
-        "description": job.description,
-        "url": job.url,
-        "apply_url": job.apply_url,
-        "source": job.source,
-        "source_url": job.source_url,
-        "active": job.active,
-        "evidence": job.evidence,
-        "match_score": job.match_score,
-        "match_reasons": job.match_reasons,
-        "verified_at": _iso(job.verified_at),
-        "created_at": _iso(job.created_at),
-    }
+    return job_discovery_engine.job_payload(job)
 
 
 def _draft_dict(draft):
@@ -557,9 +586,40 @@ def all_jobs(
     active: bool | None = None,
     page: int = 1,
     page_size: int = 50,
+    skills: str = "",
+    experience: str = "",
+    salary_min: int | None = None,
+    fresher_only: bool = False,
+    sources: str = "",
+    posted_within_days: int | None = None,
+    sort: str = "newest",
     user: User = Depends(get_current_user),
 ):
-    return list_all_jobs(user.id, query, company, location, active, page, page_size)
+    return list_all_jobs(
+        user.id,
+        query,
+        company,
+        location,
+        active,
+        page,
+        page_size,
+        skills,
+        experience,
+        salary_min,
+        fresher_only,
+        sources,
+        posted_within_days,
+        sort,
+    )
+
+
+@app.post("/api/jobs/discover")
+def discover_jobs_globally(
+    payload: JobDiscoveryInput | None = None,
+    user: User = Depends(get_current_user),
+):
+    values = payload.model_dump() if payload else {}
+    return job_discovery_engine.discover_for_owner(user.id, values)
 
 
 @app.get("/api/companies/template")
@@ -658,6 +718,8 @@ def generate_job_draft(job_id: int, user: User = Depends(get_current_user)):
     job = get_job(job_id, user.id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
+    if not job.contact_id:
+        raise HTTPException(status_code=409, detail="This portal role has no outreach contact. Create a contact first.")
     with SessionLocal() as db:
         contact = db.get(Contact, job.contact_id)
     if not contact or contact.owner_id != user.id:
@@ -681,8 +743,68 @@ def create_job_draft(job_id: int, payload: DraftInput, user: User = Depends(get_
     job = get_job(job_id, user.id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
+    if not job.contact_id:
+        raise HTTPException(status_code=409, detail="This portal role has no outreach contact.")
     draft_id = save_draft(job.contact_id, payload.subject, payload.body, job.id, user.id)
     return {"id": draft_id}
+
+
+@app.get("/api/job-alerts")
+def list_job_alerts(user: User = Depends(get_current_user)):
+    return job_alerts.list_alerts(user.id)
+
+
+@app.post("/api/job-alerts")
+def create_job_alert(payload: JobAlertInput, user: User = Depends(get_current_user)):
+    alert = job_alerts.create_alert(user.id, payload.model_dump())
+    audit_service.log(user.id, "JOB_ALERT_CREATED", f"alert={alert['name'][:80]}")
+    return alert
+
+
+@app.put("/api/job-alerts/{alert_id}")
+def update_job_alert(alert_id: int, payload: JobAlertUpdate, user: User = Depends(get_current_user)):
+    alert = job_alerts.update_alert(alert_id, user.id, payload.model_dump(exclude_unset=True))
+    if not alert:
+        raise HTTPException(status_code=404, detail="Job alert not found.")
+    return alert
+
+
+@app.delete("/api/job-alerts/{alert_id}")
+def delete_job_alert(alert_id: int, user: User = Depends(get_current_user)):
+    if not job_alerts.delete_alert(alert_id, user.id):
+        raise HTTPException(status_code=404, detail="Job alert not found.")
+    audit_service.log(user.id, "JOB_ALERT_DELETED", f"alert_id={alert_id}")
+    return {"ok": True}
+
+
+@app.post("/api/job-alerts/{alert_id}/run")
+def run_job_alert(alert_id: int, user: User = Depends(get_current_user)):
+    result = job_alerts.run_alert(user.id, alert_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Job alert not found.")
+    return result
+
+
+@app.get("/api/job-notifications")
+def list_job_notifications(limit: int = 50, unread_only: bool = False, user: User = Depends(get_current_user)):
+    return job_alerts.list_notifications(user.id, limit, unread_only)
+
+
+@app.get("/api/job-notifications/unread-count")
+def job_notification_unread_count(user: User = Depends(get_current_user)):
+    return {"count": job_alerts.unread_count(user.id)}
+
+
+@app.post("/api/job-notifications/read-all")
+def mark_all_job_notifications_read(user: User = Depends(get_current_user)):
+    return {"updated": job_alerts.mark_all_read(user.id)}
+
+
+@app.post("/api/job-notifications/{notification_id}/read")
+def mark_job_notification_read(notification_id: int, user: User = Depends(get_current_user)):
+    if not job_alerts.mark_notification_read(notification_id, user.id):
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return {"ok": True}
 
 
 @app.get("/api/campaigns")
@@ -1061,6 +1183,12 @@ def get_settings(user: User = Depends(get_current_user)):
         "followup_auto_draft_enabled": settings.followup_auto_draft_enabled,
         "followup_poll_seconds": settings.followup_poll_seconds,
         "followup_max_per_run": settings.followup_max_per_run,
+        "job_discovery_enabled": settings.job_discovery_enabled,
+        "job_discovery_poll_seconds": settings.job_discovery_poll_seconds,
+        "job_discovery_portals": settings.job_discovery_portals,
+        "job_discovery_max_per_source": settings.job_discovery_max_per_source,
+        "job_alert_email_enabled": settings.job_alert_email_enabled,
+        "job_alert_unread_count": job_alerts.unread_count(user.id),
         "resume_name": profile["resume_name"],
         "onboarding": profile_service.onboarding_status(user.id),
         "hr_database_unlocked": billing_service.has_entitlement(user.id),

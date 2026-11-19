@@ -23,7 +23,20 @@ def _ensure_columns():
             "job_id": "ALTER TABLE email_drafts ADD COLUMN job_id INTEGER",
             "owner_id": "ALTER TABLE email_drafts ADD COLUMN owner_id INTEGER",
         },
-        "job_postings": {"owner_id": "ALTER TABLE job_postings ADD COLUMN owner_id INTEGER"},
+        "job_postings": {
+            "owner_id": "ALTER TABLE job_postings ADD COLUMN owner_id INTEGER",
+            "posted_at": "ALTER TABLE job_postings ADD COLUMN posted_at DATETIME",
+            "salary_min": "ALTER TABLE job_postings ADD COLUMN salary_min INTEGER",
+            "salary_max": "ALTER TABLE job_postings ADD COLUMN salary_max INTEGER",
+            "salary_currency": "ALTER TABLE job_postings ADD COLUMN salary_currency VARCHAR(10) DEFAULT ''",
+            "salary_period": "ALTER TABLE job_postings ADD COLUMN salary_period VARCHAR(20) DEFAULT ''",
+            "experience_level": "ALTER TABLE job_postings ADD COLUMN experience_level VARCHAR(30) DEFAULT ''",
+            "employment_type": "ALTER TABLE job_postings ADD COLUMN employment_type VARCHAR(50) DEFAULT ''",
+            "remote": "ALTER TABLE job_postings ADD COLUMN remote BOOLEAN DEFAULT 0",
+            "fingerprint": "ALTER TABLE job_postings ADD COLUMN fingerprint VARCHAR(64)",
+            "first_seen_at": "ALTER TABLE job_postings ADD COLUMN first_seen_at DATETIME",
+            "last_seen_at": "ALTER TABLE job_postings ADD COLUMN last_seen_at DATETIME",
+        },
         "outreach_events": {
             "owner_id": "ALTER TABLE outreach_events ADD COLUMN owner_id INTEGER",
             "followup_draft_id": "ALTER TABLE outreach_events ADD COLUMN followup_draft_id INTEGER",
@@ -98,11 +111,53 @@ def _migrate_contact_uniqueness():
             connection.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
+def _migrate_job_contact_nullable():
+    if not settings.database_url.startswith("sqlite"):
+        return
+    with engine.begin() as connection:
+        columns = connection.exec_driver_sql("PRAGMA table_info('job_postings')").fetchall()
+        contact_column = next((row for row in columns if row[1] == "contact_id"), None)
+        if not contact_column or not contact_column[3]:
+            return
+
+        indexes = connection.exec_driver_sql("PRAGMA index_list('job_postings')").fetchall()
+        plain_indexes = []
+        for row in indexes:
+            name, unique = row[1], row[2]
+            origin = row[3] if len(row) > 3 else ""
+            if not unique and origin == "c":
+                plain_indexes.append((name, _index_columns(connection, name)))
+
+        table = Base.metadata.tables["job_postings"]
+        create_sql = str(CreateTable(table).compile(dialect=sqlite.dialect())).strip()
+        create_sql = re.sub(r"^CREATE TABLE job_postings\b", "CREATE TABLE job_postings_new", create_sql, count=1)
+        names = [column.name for column in table.columns]
+        column_list = ", ".join(f'"{name}"' for name in names)
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        try:
+            connection.exec_driver_sql(create_sql)
+            connection.exec_driver_sql(
+                f"INSERT INTO job_postings_new ({column_list}) SELECT {column_list} FROM job_postings"
+            )
+            connection.exec_driver_sql("DROP TABLE job_postings")
+            connection.exec_driver_sql("ALTER TABLE job_postings_new RENAME TO job_postings")
+            for name, columns in plain_indexes:
+                quoted_name = name.replace('"', '""')
+                quoted_columns = ", ".join(f'"{column}"' for column in columns)
+                connection.exec_driver_sql(
+                    f'CREATE INDEX "{quoted_name}" ON job_postings ({quoted_columns})'
+                )
+        finally:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
     _migrate_contact_uniqueness()
+    _migrate_job_contact_nullable()
     if settings.database_url.startswith("sqlite"):
         with engine.begin() as conn:
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_job_postings_fingerprint ON job_postings (fingerprint)")
             conn.exec_driver_sql("PRAGMA journal_mode=WAL")
             conn.exec_driver_sql("PRAGMA foreign_keys=ON")

@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
   Bell,
+  BriefcaseBusiness,
   CalendarClock,
   CheckCircle2,
   ChevronDown,
@@ -25,7 +26,22 @@ import { Button, IconButton } from "../ui";
 import { CommandPalette } from "./CommandPalette";
 
 export function Topbar({ onOpenMobile }) {
-  const { user, signOut, theme, toggleTheme, refresh, busy, followups, drafts, campaigns, settings } = useWorkspace();
+  const {
+    user,
+    signOut,
+    theme,
+    toggleTheme,
+    refresh,
+    busy,
+    followups,
+    drafts,
+    campaigns,
+    settings,
+    jobNotifications,
+    jobUnreadCount,
+    markJobNotificationRead,
+    markAllJobNotificationsRead,
+  } = useWorkspace();
   const location = useLocation();
   const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -86,8 +102,19 @@ export function Topbar({ onOpenMobile }) {
         path: "/settings",
       });
     }
+    for (const item of jobNotifications.filter((notification) => !notification.read).slice(0, 3)) {
+      result.push({
+        id: `job-${item.id}`,
+        icon: BriefcaseBusiness,
+        tone: "violet",
+        title: item.title,
+        description: item.message,
+        path: "/discovery",
+        notificationId: item.id,
+      });
+    }
     return result;
-  }, [campaigns, drafts, followups, settings]);
+  }, [campaigns, drafts, followups, jobNotifications, settings]);
 
   useEffect(() => {
     const handleKey = (event) => {
@@ -123,23 +150,22 @@ export function Topbar({ onOpenMobile }) {
             <i>/</i>
             <strong>{title}</strong>
           </div>
-          {settings?.gmail_connected ? (
-            <span className="gmail-chip connected"><span className="gmail-dot" />Gmail connected</span>
-          ) : (
-            <Link to="/settings" className="gmail-chip">Connect Gmail</Link>
-          )}
         </div>
-        <div className="topbar-right">
+
+        <div className="topbar-center">
           <button type="button" className="command-trigger" onClick={() => setPaletteOpen(true)}>
-            <Search size={16} />
+            <Search size={15} />
             <span>Search or jump to...</span>
             <kbd><Command size={11} /> K</kbd>
           </button>
-          <IconButton label="Refresh data" icon={RefreshCw} className={busy ? "spin-icon" : ""} onClick={refresh} />
+        </div>
+
+        <div className="topbar-right">
+          <IconButton label="Refresh data" icon={RefreshCw} className={busy ? "spin" : ""} onClick={refresh} />
           <IconButton label={theme === "dark" ? "Use light theme" : "Use dark theme"} icon={theme === "dark" ? Sun : Moon} onClick={toggleTheme} />
           <div className="notification-wrap" ref={notificationsRef}>
             <IconButton label="Notifications" icon={Bell} onClick={openNotifications} aria-expanded={notificationsOpen} />
-            {alerts.length && !notificationsSeen ? <span className="notification-dot" /> : null}
+            {jobUnreadCount || (alerts.length && !notificationsSeen) ? <span className="notification-dot" /> : null}
             <AnimatePresence>
               {notificationsOpen ? (
                 <motion.div
@@ -150,7 +176,7 @@ export function Topbar({ onOpenMobile }) {
                 >
                   <div className="notification-head">
                     <strong>Workspace alerts</strong>
-                    <span>{alerts.length ? `${alerts.length} item${alerts.length === 1 ? "" : "s"}` : "All clear"}</span>
+                    <span>{jobUnreadCount ? `${jobUnreadCount} new job${jobUnreadCount === 1 ? "" : "s"}` : alerts.length ? `${alerts.length} item${alerts.length === 1 ? "" : "s"}` : "All clear"}</span>
                   </div>
                   {alerts.length ? alerts.map((alert) => {
                     const Icon = alert.icon;
@@ -160,18 +186,25 @@ export function Topbar({ onOpenMobile }) {
                         className="notification-item"
                         key={alert.id}
                         onClick={() => {
+                          if (alert.notificationId) markJobNotificationRead(alert.notificationId).catch(() => {});
                           setNotificationsOpen(false);
                           navigate(alert.path);
                         }}
                       >
-                        <span className={`notification-icon tone-${alert.tone}`}><Icon size={16} /></span>
+                        <span className={`notification-icon tone-${alert.tone}`}><Icon size={15} /></span>
                         <span><strong>{alert.title}</strong><small>{alert.description}</small></span>
                       </button>
                     );
                   }) : (
-                    <div className="notification-empty"><CheckCircle2 size={20} /><span>You're all caught up.</span></div>
-                  )}
-                </motion.div>
+                      <div className="notification-empty"><CheckCircle2 size={18} /><span>You're all caught up.</span></div>
+                    )}
+                    {jobUnreadCount ? (
+                      <div className="notification-footer">
+                        <button type="button" onClick={() => markAllJobNotificationsRead().catch(() => {})}>Mark job alerts read</button>
+                      </div>
+                    ) : null}
+                  </motion.div>
+
               ) : null}
             </AnimatePresence>
           </div>
@@ -199,8 +232,8 @@ export function Topbar({ onOpenMobile }) {
                     <span className="profile-avatar">{initials(user?.name || user?.email)}</span>
                     <div><strong>{user?.name}</strong><small>{user?.email}</small></div>
                   </div>
-                  <button type="button" onClick={() => navigate("/settings")}><Settings size={16} /> Profile & settings</button>
-                  <button type="button" onClick={signOut}><LogOut size={16} /> Sign out</button>
+                  <button type="button" onClick={() => navigate("/settings")}><Settings size={15} /> Profile & settings</button>
+                  <button type="button" onClick={signOut}><LogOut size={15} /> Sign out</button>
                 </motion.div>
               ) : null}
             </AnimatePresence>

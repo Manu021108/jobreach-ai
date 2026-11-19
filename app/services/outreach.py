@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from sqlalchemy import select, func, or_
+from sqlalchemy import and_, select, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from email_validator import validate_email, EmailNotValidError
@@ -21,12 +21,22 @@ def _owned_contact(model, owner_id):
     return model.contact.has(Contact.owner_id == int(owner_id))
 
 
+def _owned_job(model, owner_id):
+    if owner_id is None:
+        return True
+    return or_(
+        model.contact_id.is_(None),
+        model.contact.has(Contact.owner_id == int(owner_id)),
+    )
+
+
 def _job_owned(job, owner_id):
     if owner_id is None:
         return True
     contact = job.contact
     return bool(
-        job.owner_id == int(owner_id) and contact and contact.owner_id == int(owner_id)
+        job.owner_id == int(owner_id)
+        and (job.contact_id is None or (contact and contact.owner_id == int(owner_id)))
     )
 
 
@@ -548,7 +558,7 @@ def get_jobs(contact_id, owner_id=None):
             select(JobPosting)
             .where(JobPosting.contact_id == int(contact_id))
             .where(_owned(JobPosting, owner_id))
-            .where(_owned_contact(JobPosting, owner_id))
+            .where(_owned_job(JobPosting, owner_id))
             .order_by(JobPosting.created_at.desc())
         )
         return list(db.scalars(stmt).all())
@@ -636,17 +646,54 @@ def _job_payload(job):
         "match_score": job.match_score,
         "match_reasons": job.match_reasons,
         "verified_at": _as_utc(job.verified_at).isoformat() if job.verified_at else None,
+        "posted_at": _as_utc(job.posted_at).isoformat() if getattr(job, "posted_at", None) else None,
+        "salary_min": getattr(job, "salary_min", None),
+        "salary_max": getattr(job, "salary_max", None),
+        "salary_currency": getattr(job, "salary_currency", ""),
+        "salary_period": getattr(job, "salary_period", ""),
+        "experience_level": getattr(job, "experience_level", ""),
+        "employment_type": getattr(job, "employment_type", ""),
+        "remote": bool(getattr(job, "remote", False)),
+        "fingerprint": getattr(job, "fingerprint", None),
+        "first_seen_at": _as_utc(job.first_seen_at).isoformat() if getattr(job, "first_seen_at", None) else None,
+        "last_seen_at": _as_utc(job.last_seen_at).isoformat() if getattr(job, "last_seen_at", None) else None,
         "created_at": _as_utc(job.created_at).isoformat() if job.created_at else None,
         "contact_email": contact.email if contact else "",
         "contact_role": contact.role if contact else "",
     }
 
 
-def list_all_jobs(owner_id, query="", company="", location="", active=None, page=1, page_size=50):
+def _csv_filters(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def list_all_jobs(
+    owner_id,
+    query="",
+    company="",
+    location="",
+    active=None,
+    page=1,
+    page_size=50,
+    skills="",
+    experience="",
+    salary_min=None,
+    fresher_only=False,
+    sources="",
+    posted_within_days=None,
+    sort="newest",
+):
     page = max(1, int(page))
     page_size = min(max(1, int(page_size)), 100)
+    skill_terms = _csv_filters(skills)
+    experience_terms = [item.upper() for item in _csv_filters(experience)]
+    source_terms = _csv_filters(sources)
     with SessionLocal() as db:
-        conditions = [_owned(JobPosting, owner_id), _owned_contact(JobPosting, owner_id)]
+        conditions = [_owned(JobPosting, owner_id), _owned_job(JobPosting, owner_id)]
         if query:
             term = f"%{query.strip()}%"
             conditions.append(or_(
@@ -657,22 +704,76 @@ def list_all_jobs(owner_id, query="", company="", location="", active=None, page
         if company:
             conditions.append(JobPosting.company_name.ilike(f"%{company.strip()}%"))
         if location:
-            conditions.append(JobPosting.location.ilike(f"%{location.strip()}%"))
+            term = f"%{location.strip()}%"
+            conditions.append(or_(JobPosting.location.ilike(term), JobPosting.remote.is_(True)))
         if active is not None:
             conditions.append(JobPosting.active.is_(bool(active)))
+        if skill_terms:
+            conditions.append(or_(*[
+                or_(
+                    JobPosting.title.ilike(f"%{skill}%"),
+                    JobPosting.description.ilike(f"%{skill}%"),
+                )
+                for skill in skill_terms
+            ]))
+        if experience_terms:
+            levels = []
+            for term in experience_terms:
+                levels.extend(term.split())
+            levels = list(dict.fromkeys(levels))
+            experience_conditions = [JobPosting.experience_level.ilike(f"%{level}%") for level in levels if level != "ALL"]
+            if "ENTRY" in levels:
+                experience_conditions.extend([
+                    JobPosting.experience_level.ilike("%FRESHER%"),
+                    JobPosting.title.ilike("%junior%"),
+                    JobPosting.title.ilike("%entry%"),
+                ])
+            if experience_conditions:
+                conditions.append(or_(*experience_conditions))
+        if salary_min:
+            floor = int(salary_min)
+            conditions.append(or_(
+                JobPosting.salary_min >= floor,
+                JobPosting.salary_max >= floor,
+            ))
+        if fresher_only:
+            conditions.append(or_(
+                JobPosting.experience_level.in_(["FRESHER", "ENTRY"]),
+                JobPosting.title.ilike("%fresher%"),
+                JobPosting.title.ilike("%junior%"),
+                JobPosting.title.ilike("%entry%"),
+                JobPosting.title.ilike("%graduate%"),
+            ))
+        if source_terms:
+            conditions.append(JobPosting.source.in_(source_terms))
+        if posted_within_days:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=int(posted_within_days))
+            conditions.append(or_(
+                JobPosting.posted_at >= cutoff,
+                and_(JobPosting.posted_at.is_(None), JobPosting.created_at >= cutoff),
+            ))
         total = db.scalar(select(func.count(JobPosting.id)).where(*conditions)) or 0
+        order = [JobPosting.active.desc()]
+        if sort == "match":
+            order.extend([JobPosting.match_score.desc().nullslast(), JobPosting.created_at.desc()])
+        elif sort == "salary":
+            order.extend([JobPosting.salary_max.desc().nullslast(), JobPosting.created_at.desc()])
+        elif sort == "posted":
+            order.extend([JobPosting.posted_at.desc().nullslast(), JobPosting.created_at.desc()])
+        else:
+            order.extend([JobPosting.created_at.desc(), JobPosting.id.desc()])
         rows = list(db.scalars(
             select(JobPosting)
             .options(joinedload(JobPosting.contact))
             .where(*conditions)
-            .order_by(JobPosting.active.desc(), JobPosting.created_at.desc(), JobPosting.id.desc())
+            .order_by(*order)
             .offset((page - 1) * page_size)
             .limit(page_size)
         ).all())
         companies = [
             value for value in db.scalars(
                 select(JobPosting.company_name)
-                .where(_owned(JobPosting, owner_id), _owned_contact(JobPosting, owner_id))
+                .where(_owned(JobPosting, owner_id), _owned_job(JobPosting, owner_id))
                 .distinct()
                 .order_by(JobPosting.company_name)
             ).all()
@@ -702,7 +803,7 @@ def analytics_summary(owner_id, days=30):
         jobs = list(db.scalars(
             select(JobPosting)
             .options(joinedload(JobPosting.contact))
-            .where(_owned(JobPosting, owner_id), _owned_contact(JobPosting, owner_id))
+            .where(_owned(JobPosting, owner_id), _owned_job(JobPosting, owner_id))
             .order_by(JobPosting.created_at.desc())
         ).all())
         events = list(db.scalars(

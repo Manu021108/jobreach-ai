@@ -29,13 +29,13 @@ export const navigation = [
   {
     label: "Outreach",
     items: [
-      { id: "campaigns", label: "Campaign Manager", path: "/campaigns", icon: BriefcaseBusiness },
+      { id: "campaigns", label: "Campaigns", path: "/campaigns", icon: BriefcaseBusiness },
       { id: "followups", label: "Follow-ups", path: "/followups", icon: CalendarClock },
       { id: "inbox", label: "Inbox", path: "/inbox", icon: Inbox },
     ],
   },
   {
-    label: "Intelligence",
+    label: "Insights",
     items: [
       { id: "analytics", label: "Analytics", path: "/analytics", icon: BarChart3 },
       { id: "activity", label: "Activity", path: "/activity", icon: Activity },
