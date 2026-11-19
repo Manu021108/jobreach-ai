@@ -10,7 +10,7 @@ import main
 from app.db import session as db_session
 from app.db.models import Base
 from app.services import audit, auth as auth_service, outreach as outreach_service, profile_service
-from app.services import job_discovery_engine, job_discovery_worker
+from app.services import job_discovery_engine
 from app.services.job_sources import parse_experience, parse_salary
 
 
@@ -31,8 +31,6 @@ def client_factory(monkeypatch, tmp_path):
     for module in modules:
         monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr(main, "init_db", lambda: None)
-    monkeypatch.setattr(job_discovery_worker, "start_worker", lambda: None)
-    monkeypatch.setattr(job_discovery_worker, "stop_worker", lambda: None)
     return lambda: TestClient(main.app)
 
 

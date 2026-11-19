@@ -7,7 +7,6 @@ from app.config import settings
 from app.db.models import EmailDraft, OutreachEvent
 from app.db.session import SessionLocal
 from app.services import profile_service
-from app.services import worker as worker_manager
 
 
 def _followup_subject(original):
@@ -85,19 +84,3 @@ def run_once(now=None, owner_id=None):
             generated += 1
         db.commit()
     return {"generated": generated, "skipped": skipped}
-
-
-def start_worker():
-    """Register and start the recurring follow-up draft job."""
-    worker_manager.worker.register(
-        "followups",
-        run_once,
-        settings.followup_poll_seconds,
-        description="Create due follow-up drafts",
-    )
-    worker_manager.start_worker()
-
-
-def stop_worker():
-    """Stop the shared worker scheduler (idempotent)."""
-    worker_manager.stop_worker()

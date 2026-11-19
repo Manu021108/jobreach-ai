@@ -12,7 +12,6 @@ from app.db.models import Campaign, CampaignContact, EmailDraft, OutreachEvent, 
 from app.db.session import SessionLocal
 from app.services import audit, campaign as campaign_service
 from app.services import compliance, gmail_tokens, profile_service
-from app.services import worker as worker_manager
 from app.services.gmail_service import GmailService
 from app.services.outreach import latest_sent_at, mark_sent, sent_today_count
 
@@ -468,19 +467,3 @@ def run_once(now=None):
         )
         return _result("uncertain", sent=1, message=str(exc)[:200])
     return _result("sent", sent=1)
-
-
-def start_worker():
-    """Register and start the recurring auto-send worker job."""
-    worker_manager.worker.register(
-        "auto_send",
-        run_once,
-        settings.auto_send_poll_seconds,
-        description="Send queued campaign drafts",
-    )
-    worker_manager.start_worker()
-
-
-def stop_worker():
-    """Stop the shared worker scheduler (idempotent)."""
-    worker_manager.stop_worker()

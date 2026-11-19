@@ -29,8 +29,7 @@ from app.services import campaign as campaign_service
 from app.services import compliance
 from app.services import followups as followup_service
 from app.services import gmail_service, gmail_tokens, hr_database, job_alerts, profile_service
-from app.services import worker as worker_manager
-from app.services import job_discovery_engine, job_discovery_worker
+from app.services import job_discovery_engine
 from app.services.ai_writer import AIWriter
 from app.services.gmail_service import GmailService
 from app.services.security import (
@@ -74,16 +73,8 @@ from app.services.outreach import (
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    try:
-        init_db()
-        if settings.auto_send_worker_enabled:
-            auto_sender.start_worker()
-        if settings.followup_auto_draft_enabled:
-            followup_service.start_worker()
-        job_discovery_worker.start_worker()
-        yield
-    finally:
-        worker_manager.stop_worker()
+    init_db()
+    yield
 
 
 app = FastAPI(title="JobReach AI", docs_url=None, redoc_url=None, lifespan=lifespan)

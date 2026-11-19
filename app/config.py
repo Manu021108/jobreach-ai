@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
     app_name: str = "JobReach AI"
-    database_url: str = f"sqlite:///{ROOT / 'data' / 'jobreach.db'}"
+    database_url: str = "postgresql://jobreach:jobreach@localhost:5432/jobreach"
     timezone: str = "Asia/Kolkata"
     sender_name: str = "Your Full Name"
     sender_email: str = "you@gmail.com"
@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     gmail_scopes: str = "https://www.googleapis.com/auth/gmail.send,https://www.googleapis.com/auth/gmail.readonly"
     gmail_oauth_redirect_uri: str = "http://127.0.0.1:8000/api/gmail/oauth/callback"
     gmail_token_encryption_key: str = ""
+    celery_broker_url: str = "redis://127.0.0.1:6379/0"
+    celery_result_backend: str = "redis://127.0.0.1:6379/1"
+    celery_task_always_eager: bool = False
+    celery_task_time_limit: int = Field(default=900, ge=60, le=86400)
     dry_run: bool = True
     max_emails_per_run: int = Field(default=5, ge=1, le=25)
     min_seconds_between_emails: int = Field(default=45, ge=10, le=3600)

@@ -439,3 +439,7 @@ As a high-skilled product developer, I have reviewed the jobreach-ai project
 
   I have not made any code changes, but I recommend prioritizing the database migration
   and the transition to a formal task queue before attempting to scale the user base.
+
+Implementation note (2026-11-19): The threading/APScheduler workers described above were replaced with Celery workers plus Redis. Celery Beat owns the periodic auto-send, follow-up, and job-discovery schedules; the FastAPI app no longer starts background threads. Redis broker/result settings and worker/beat commands are documented in README.md. Use a persistent Redis instance and run a single Beat process in production.
+
+Implementation note (2026-11-19): The SQLite persistence layer was replaced with PostgreSQL plus Alembic migrations. Compose files provision PostgreSQL and Redis, launchers apply ``alembic upgrade head`` before starting the API and Celery processes, and the SQLAlchemy session uses a pooled psycopg 3 engine with connection pre-ping. SQLite remains available only for tests and legacy local overrides.

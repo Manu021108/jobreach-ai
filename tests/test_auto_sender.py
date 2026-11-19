@@ -14,7 +14,9 @@ from app.services import audit
 from app.services import auth as auth_service
 from app.services import auto_sender
 from app.services import campaign as campaign_service
+from app.services import followups as followup_service
 from app.services import gmail_tokens
+from app.services import job_discovery_worker
 from app.services import outreach as outreach_service
 from app.services import profile_service
 
@@ -334,16 +336,26 @@ def test_unmatched_stale_sending_is_requeued(client_factory, monkeypatch):
     assert _campaign_state(client, campaign["id"])["counts"]["sent"] == 1
 
 
-def test_worker_scheduler_restart_reregisters_jobs():
-    from app.services import worker as worker_manager
+def test_celery_beat_schedule_contains_background_jobs():
+    from app.services.worker import beat_schedule, celery_app
 
-    manager = worker_manager.WorkerManager()
-    manager.register("test-job", lambda: None, 60)
-    try:
-        manager.start()
-        assert len(manager._scheduler.get_jobs()) == 1
-        manager.stop()
-        manager.start()
-        assert len(manager._scheduler.get_jobs()) == 1
-    finally:
-        manager.stop()
+    assert celery_app.main == "jobreach"
+    assert beat_schedule == celery_app.conf.beat_schedule
+    assert beat_schedule["auto-send"]["task"] == "jobreach.auto_send_run_once"
+    assert beat_schedule["followups"]["task"] == "jobreach.followups_run_once"
+    assert beat_schedule["job-discovery"]["task"] == "jobreach.job_discovery_run_once"
+
+
+def test_celery_task_wrappers_call_service_passes(monkeypatch):
+    from app.services import tasks
+
+    monkeypatch.setattr(settings, "auto_send_worker_enabled", True)
+    monkeypatch.setattr(settings, "followup_auto_draft_enabled", True)
+    monkeypatch.setattr(settings, "job_discovery_enabled", True)
+    monkeypatch.setattr(auto_sender, "run_once", lambda: {"sent": 1})
+    monkeypatch.setattr(followup_service, "run_once", lambda: {"generated": 2})
+    monkeypatch.setattr(job_discovery_worker, "run_once", lambda: {"alerts": 3})
+
+    assert tasks.auto_send_run_once.run() == {"sent": 1}
+    assert tasks.followups_run_once.run() == {"generated": 2}
+    assert tasks.job_discovery_run_once.run() == {"alerts": 3}

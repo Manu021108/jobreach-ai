@@ -1,68 +1,86 @@
 import re
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, inspect
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateTable
 from app.config import settings
 from app.db.models import Base
 
-connect_args = {"check_same_thread": False, "timeout": 30} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=connect_args, pool_pre_ping=True)
+
+def _normalize_database_url(url: str) -> str:
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url.removeprefix("postgresql://")
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url.removeprefix("postgres://")
+    return url
+
+
+DATABASE_URL = _normalize_database_url(settings.database_url)
+is_sqlite = DATABASE_URL.startswith("sqlite")
+
+connect_args = {"check_same_thread": False, "timeout": 30} if is_sqlite else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True, pool_recycle=1800)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
 
 def _ensure_columns():
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
     required = {
         "contacts": {
-            "website": "ALTER TABLE contacts ADD COLUMN website VARCHAR(500) DEFAULT ''",
-            "owner_id": "ALTER TABLE contacts ADD COLUMN owner_id INTEGER",
+            "website": (String(500), "''"),
+            "owner_id": (Integer(), None),
         },
         "email_drafts": {
-            "job_id": "ALTER TABLE email_drafts ADD COLUMN job_id INTEGER",
-            "owner_id": "ALTER TABLE email_drafts ADD COLUMN owner_id INTEGER",
+            "job_id": (Integer(), None),
+            "owner_id": (Integer(), None),
         },
         "job_postings": {
-            "owner_id": "ALTER TABLE job_postings ADD COLUMN owner_id INTEGER",
-            "posted_at": "ALTER TABLE job_postings ADD COLUMN posted_at DATETIME",
-            "salary_min": "ALTER TABLE job_postings ADD COLUMN salary_min INTEGER",
-            "salary_max": "ALTER TABLE job_postings ADD COLUMN salary_max INTEGER",
-            "salary_currency": "ALTER TABLE job_postings ADD COLUMN salary_currency VARCHAR(10) DEFAULT ''",
-            "salary_period": "ALTER TABLE job_postings ADD COLUMN salary_period VARCHAR(20) DEFAULT ''",
-            "experience_level": "ALTER TABLE job_postings ADD COLUMN experience_level VARCHAR(30) DEFAULT ''",
-            "employment_type": "ALTER TABLE job_postings ADD COLUMN employment_type VARCHAR(50) DEFAULT ''",
-            "remote": "ALTER TABLE job_postings ADD COLUMN remote BOOLEAN DEFAULT 0",
-            "fingerprint": "ALTER TABLE job_postings ADD COLUMN fingerprint VARCHAR(64)",
-            "first_seen_at": "ALTER TABLE job_postings ADD COLUMN first_seen_at DATETIME",
-            "last_seen_at": "ALTER TABLE job_postings ADD COLUMN last_seen_at DATETIME",
+            "owner_id": (Integer(), None),
+            "posted_at": (DateTime(timezone=True), None),
+            "salary_min": (Integer(), None),
+            "salary_max": (Integer(), None),
+            "salary_currency": (String(10), "''"),
+            "salary_period": (String(20), "''"),
+            "experience_level": (String(30), "''"),
+            "employment_type": (String(50), "''"),
+            "remote": (Boolean(), "false"),
+            "fingerprint": (String(64), None),
+            "first_seen_at": (DateTime(timezone=True), None),
+            "last_seen_at": (DateTime(timezone=True), None),
         },
         "outreach_events": {
-            "owner_id": "ALTER TABLE outreach_events ADD COLUMN owner_id INTEGER",
-            "followup_draft_id": "ALTER TABLE outreach_events ADD COLUMN followup_draft_id INTEGER",
+            "owner_id": (Integer(), None),
+            "followup_draft_id": (Integer(), None),
         },
         "campaigns": {
-            "last_error": "ALTER TABLE campaigns ADD COLUMN last_error TEXT DEFAULT ''",
-            "started_at": "ALTER TABLE campaigns ADD COLUMN started_at DATETIME",
-            "paused_at": "ALTER TABLE campaigns ADD COLUMN paused_at DATETIME",
+            "last_error": (Text(), "''"),
+            "started_at": (DateTime(timezone=True), None),
+            "paused_at": (DateTime(timezone=True), None),
         },
         "campaign_contacts": {
-            "last_attempt_at": "ALTER TABLE campaign_contacts ADD COLUMN last_attempt_at DATETIME",
-            "reserved_at": "ALTER TABLE campaign_contacts ADD COLUMN reserved_at DATETIME",
+            "last_attempt_at": (DateTime(timezone=True), None),
+            "reserved_at": (DateTime(timezone=True), None),
         },
         "users": {
-            "onboarding_completed": "ALTER TABLE users ADD COLUMN onboarding_completed BOOLEAN DEFAULT 1",
-            "dry_run": "ALTER TABLE users ADD COLUMN dry_run BOOLEAN",
+            "onboarding_completed": (Boolean(), "true"),
+            "dry_run": (Boolean(), None),
         },
     }
     for table, columns in required.items():
         if table not in tables:
             continue
         existing = {column["name"] for column in inspector.get_columns(table)}
-        for name, statement in columns.items():
-            if name not in existing:
-                with engine.begin() as connection:
-                    connection.exec_driver_sql(statement)
+        for name, (column_type, default) in columns.items():
+            if name in existing:
+                continue
+            type_sql = column_type.compile(dialect=engine.dialect)
+            default_sql = f" DEFAULT {default}" if default is not None else ""
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    f'ALTER TABLE {table} ADD COLUMN "{name}" {type_sql}{default_sql}'
+                )
 
 
 def _index_columns(connection, name):
@@ -72,7 +90,7 @@ def _index_columns(connection, name):
 
 
 def _migrate_contact_uniqueness():
-    if not settings.database_url.startswith("sqlite"):
+    if not is_sqlite:
         return
     with engine.begin() as connection:
         indexes = connection.exec_driver_sql("PRAGMA index_list('contacts')").fetchall()
@@ -113,7 +131,7 @@ def _migrate_contact_uniqueness():
 
 
 def _migrate_job_contact_nullable():
-    if not settings.database_url.startswith("sqlite"):
+    if not is_sqlite:
         return
     with engine.begin() as connection:
         columns = connection.exec_driver_sql("PRAGMA table_info('job_postings')").fetchall()
@@ -153,12 +171,13 @@ def _migrate_job_contact_nullable():
 
 
 def init_db():
+    if not is_sqlite:
+        return
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
     _migrate_contact_uniqueness()
     _migrate_job_contact_nullable()
-    if settings.database_url.startswith("sqlite"):
-        with engine.begin() as conn:
-            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_job_postings_fingerprint ON job_postings (fingerprint)")
-            conn.exec_driver_sql("PRAGMA journal_mode=WAL")
-            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+    with engine.begin() as conn:
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_job_postings_fingerprint ON job_postings (fingerprint)")
+        conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+        conn.exec_driver_sql("PRAGMA foreign_keys=ON")

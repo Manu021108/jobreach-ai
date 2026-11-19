@@ -76,12 +76,12 @@ For local development, Stripe CLI can forward signed events to `http://127.0.0.1
 
 ## 3.3 Campaign builder and background sender
 
-The **Campaign & Send** page lets you select up to 50 eligible contacts, generate one AI draft per contact, approve drafts in bulk, and queue approved drafts. **Start auto-send** begins a background worker that sends queued drafts one at a time. The worker enforces `MAX_EMAILS_PER_DAY`, `MIN_SECONDS_BETWEEN_EMAILS`, and retry backoff, and records per-campaign progress, attempts, and errors. It pauses automatically on the daily cap, Gmail/resume problems, or terminal send failures. You can pause a running campaign at any time. Editing an approved draft resets it to **Draft** and requires re-approval.
+The **Campaign & Send** page lets you select up to 50 eligible contacts, generate one AI draft per contact, approve drafts in bulk, and queue approved drafts. **Start auto-send** makes the campaign eligible for the Celery auto-send job, which sends queued drafts one at a time. The worker enforces `MAX_EMAILS_PER_DAY`, `MIN_SECONDS_BETWEEN_EMAILS`, and retry backoff, and records per-campaign progress, attempts, and errors. It pauses automatically on the daily cap, Gmail/resume problems, or terminal send failures. You can pause a running campaign at any time. Editing an approved draft resets it to **Draft** and requires re-approval.
 
 Automated-send settings:
 
-- `AUTO_SEND_WORKER_ENABLED`: start the in-process worker with the API.
-- `AUTO_SEND_POLL_SECONDS`: how often the worker checks for due drafts.
+- `AUTO_SEND_WORKER_ENABLED`: include the auto-send schedule in Celery Beat.
+- `AUTO_SEND_POLL_SECONDS`: how often Celery Beat enqueues a send pass.
 - `AUTO_SEND_MAX_ATTEMPTS`: maximum attempts per draft before it is marked failed.
 - `AUTO_SEND_RETRY_BACKOFF_SECONDS`: base delay for retries; each retry waits progressively longer.
 - `AUTO_SEND_SEND_LEASE_SECONDS`: how long a reserved send is considered active before it is reconciled against Gmail Sent.
@@ -89,7 +89,7 @@ Automated-send settings:
 Follow-up settings:
 
 - `FOLLOWUP_AUTO_DRAFT_ENABLED`: automatically create a draft when a sent email's follow-up date is due.
-- `FOLLOWUP_POLL_SECONDS`: how often the follow-up worker checks for due reminders.
+- `FOLLOWUP_POLL_SECONDS`: how often Celery Beat enqueues a follow-up pass.
 - `FOLLOWUP_MAX_PER_RUN`: maximum follow-up drafts created per worker pass.
 
 The Follow-ups page and dashboard also provide **Sync inbox**, which matches replies and opt-outs from Gmail. Opt-out wording is detected best-effort; always verify the message before relying on it. Detected replies and opt-outs complete the open follow-up reminder so it no longer appears as due.
@@ -124,9 +124,31 @@ Set `AI_PROVIDER=openai-compatible`, `AI_BASE_URL` to the provider's compatible 
 
 AI-generated text is always a draft. Check every company-specific statement before approving.
 
+## 4.1 Background workers (Celery + Redis)
+
+Scheduled work runs in Celery, not inside the FastAPI process. Start Redis as described in section 4.2, then start one worker and one Beat scheduler from the project root. Run only one Beat process; worker instances can be scaled separately.
+
+```bash
+celery -A app.services.worker:celery_app worker --loglevel=info --concurrency=1 --queues jobreach
+celery -A app.services.worker:celery_app beat --loglevel=info
+```
+
+Set `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` in `.env` to a Redis instance reachable by the API host and workers. For local debugging only, `CELERY_TASK_ALWAYS_EAGER=true` runs submitted tasks in-process without Redis; never use it in production. `CELERY_TASK_TIME_LIMIT` bounds a single task run. If Redis, the worker, or Beat is not running, manual API actions still work, but scheduled auto-send, follow-up drafts, and job-discovery alerts will not run.
+
+## 4.2 Data services (PostgreSQL)
+
+PostgreSQL is the default database. Start the local PostgreSQL and Redis services from the project root, then apply migrations before starting the API, worker, or Beat:
+
+```bash
+docker compose up -d postgres redis
+alembic upgrade head
+```
+
+`DATABASE_URL` defaults to `postgresql://jobreach:jobreach@localhost:5432/jobreach`. The Compose service credentials come from `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, and `REDIS_PORT` in `.env`; keep them consistent with `DATABASE_URL`, `CELERY_BROKER_URL`, and `CELERY_RESULT_BACKEND`. The API, Celery worker, and Beat must use the same database. For production, use managed PostgreSQL with backups and a managed Redis instance; run `alembic upgrade head` as a release step before replacing the running API version.
+
 ## 5. Run
 
-The Windows launcher installs the Python and frontend dependencies, starts the API on loopback, and runs the React development server:
+The Windows launcher installs dependencies, starts PostgreSQL and Redis through Docker when available, applies Alembic migrations, then starts the API, Celery worker/Beat, and React development server:
 
 ```bash
 run_windows.bat
@@ -136,6 +158,8 @@ For manual startup, use two terminals from the project root:
 
 ```bash
 # Terminal 1
+docker compose up -d postgres redis
+alembic upgrade head
 python -m uvicorn main:app --host 127.0.0.1 --port 8000
 
 # Terminal 2
@@ -145,6 +169,8 @@ npm run dev
 ```
 
 Open the local URL Vite prints. The Vite development server proxies API calls to `127.0.0.1:8000`. For a production-style local build, run `npm run build` in `frontend`, then start the API; FastAPI serves the built UI from `frontend/dist`.
+
+Scheduled jobs need Redis plus the Celery worker and Beat commands in section 4.1; the launcher starts those processes, but the manual two-terminal setup above starts only the API and UI.
 
 The API deliberately binds to loopback. Do not expose it publicly without HTTPS, trusted-host configuration, and a Web OAuth client: it can access local files and connected Gmail accounts.
 
@@ -187,7 +213,7 @@ pytest -q
 
 ## 10. Deployment guidance
 
-Run locally for the first version. Do not expose this app publicly without HTTPS and a trusted-host configuration. For a shared deployment, replace SQLite with PostgreSQL, add role-based access, keep the token encryption key in a managed secret store, use a managed background worker/queue, add verified backups and retention policies, and review Google's OAuth verification requirements. The in-app audit log is useful for operators but does not replace centralized security logging or provider compliance records.
+Run locally first. Do not expose this app publicly without HTTPS and a trusted-host configuration. For a shared deployment, use managed PostgreSQL with verified backups and retention policies, add role-based access, keep the token encryption key in a managed secret store, run Alembic migrations as a release step, run the Celery worker and Beat against managed Redis with persistence enabled, and review Google's OAuth verification requirements. The in-app audit log is useful for operators but does not replace centralized security logging or provider compliance records.
 
 ## 11. Efficiency roadmap
 
@@ -195,6 +221,6 @@ The current app is local-first with per-user isolation. The most useful next ste
 
 1. Add server-side pagination and search for contacts, drafts, and audit entries; the current UI loads all records at once.
 2. Move slow AI generation and Gmail reply sync into a background task with visible progress and retryable failures.
-3. Add database migrations and scheduled, verified SQLite backups before changing the schema or scaling data volume.
+3. Add scheduled, verified PostgreSQL backups and retention policies before scaling data volume.
 4. Add import preview/validation so spreadsheet errors can be fixed before records are added.
-5. For public or larger deployments, add PostgreSQL, managed secrets, HTTPS, role-based access, centralized audit logging, and retention policies.
+5. For public or larger deployments, add managed secrets, HTTPS, role-based access, centralized audit logging, and retention policies around the existing PostgreSQL/Redis setup.
