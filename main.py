@@ -81,6 +81,7 @@ from app.services.outreach import (
     update_job_match,
 )
 from app.services.semantic_matcher import get_semantic_matcher
+from app.services.deliverability import get_deliverability_service
 
 # CSRF Protection Middleware
 CSRF_COOKIE_NAME = "jr_csrf"
@@ -521,7 +522,7 @@ def login(request: Request, payload: LoginInput, response: Response):
     )
     response.set_cookie(
         CSRF_COOKIE_NAME, csrf_token, max_age=SESSION_MAX_AGE,
-        httponly=True, samesite="lax", secure=settings.auth_cookie_secure, path="/",
+        httponly=False, samesite="lax", secure=settings.auth_cookie_secure, path="/",
     )
     return _user_dict(user)
 

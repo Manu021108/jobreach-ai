@@ -44,7 +44,6 @@ import {
   ProgressBar,
   SectionHeading,
   StatusBadge,
-  Table,
 } from "../components/ui";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { api, get } from "../lib/api";

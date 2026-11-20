@@ -1,7 +1,24 @@
+function getCookie(name) {
+  if (typeof document === "undefined") return "";
+  const prefix = `${name}=`;
+  const cookie = document.cookie
+    .split(";")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(prefix));
+  return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : "";
+}
+
 export async function api(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  const headers = new Headers(options.headers);
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const csrfToken = getCookie("jr_csrf");
+    if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+  }
   const response = await fetch(`/api${path}`, {
     credentials: "include",
     ...options,
+    headers,
   });
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json")
@@ -12,32 +29,6 @@ export async function api(path, options = {}) {
     throw new Error(detail || `Request failed (${response.status})`);
   }
   return data;
-}
-
-// Auto-extract CSRF token from cookies and add to headers for state-changing requests
-export function setCSRFToken() {
-  if (typeof document === "undefined") return;
-  const cookies = document.cookie.split(";");
-  for (const cookie of cookies) {
-    const trimmed = cookie.trim();
-    if (trimmed.startsWith("jr_csrf=")) {
-      const token = trimmed.split("=")[1];
-      // Add token to upcoming requests via a global hook
-      const originalFetch = window.fetch;
-      window.fetch = function(input, init) {
-        if (init && init.method && !["GET", "HEAD", "OPTIONS"].includes(init.method)) {
-          init.headers = {
-            ...init.headers,
-            "X-CSRF-Token": token,
-          };
-        }
-        return originalFetch(input, init);
-      };
-      // Remove hook after first use
-      delete window._jr_csrf_token;
-      break;
-    }
-  }
 }
 
 export function jsonRequest(method, body) {
@@ -58,4 +49,8 @@ export function put(path, body) {
 
 export function remove(path) {
   return api(path, { method: "DELETE" });
+}
+
+export function get(path) {
+  return api(path);
 }

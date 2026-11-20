@@ -75,6 +75,11 @@ export function money(amount, currency = "INR") {
   }).format(value);
 }
 
+export function formatShortNumber(value) {
+  if (value == null) return "0";
+  return Number(value).toLocaleString();
+}
+
 export function clamp(value, min = 0, max = 100) {
   return Math.min(max, Math.max(min, Number(value) || 0));
 }
