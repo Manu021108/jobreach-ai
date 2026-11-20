@@ -8,6 +8,7 @@ import { Analytics } from "./pages/Analytics";
 import { Auth, VerifyEmail } from "./pages/Auth";
 import { Campaigns } from "./pages/Campaigns";
 import { Companies } from "./pages/Companies";
+import { Deliverability } from "./pages/Deliverability";
 import { Discovery } from "./pages/Discovery";
 import { Followups } from "./pages/Followups";
 import { Inbox } from "./pages/Inbox";
@@ -17,6 +18,7 @@ import { NotFound } from "./pages/NotFound";
 import { Onboarding } from "./pages/Onboarding";
 import { Overview } from "./pages/Overview";
 import { Resume } from "./pages/Resume";
+import { SemanticMatch } from "./pages/SemanticMatch";
 import { Settings } from "./pages/Settings";
 import { Studio } from "./pages/Studio";
 import { Unlock } from "./pages/Unlock";
@@ -84,12 +86,14 @@ function App() {
           <Route path="/companies" element={<Companies />} />
           <Route path="/discovery" element={<Discovery />} />
           <Route path="/match" element={<Match />} />
+          <Route path="/semantic" element={<SemanticMatch />} />
           <Route path="/studio" element={<Studio />} />
           <Route path="/campaigns" element={<Campaigns />} />
           <Route path="/followups" element={<Followups />} />
           <Route path="/inbox" element={<Inbox />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/activity" element={<Activity />} />
+          <Route path="/deliverability" element={<Deliverability />} />
           <Route path="/resume" element={<Resume />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/unlock" element={<Unlock />} />

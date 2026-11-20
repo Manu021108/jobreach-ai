@@ -7,10 +7,10 @@ import {
   Sparkles,
   UserRound,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "../components/ui";
-import { api, post } from "../lib/api";
+import { api, post, setCSRFToken } from "../lib/api";
 
 const MODES = [
   { id: "login", label: "Sign in" },
@@ -67,11 +67,12 @@ export function Auth({ onAuthenticated, initialMode = "login", initialToken = ""
     }
   };
 
-  const switchMode = (next) => {
-    setMode(next);
-    setError("");
-    setMessage("");
-  };
+  // Set up CSRF token after auth state changes
+  useEffect(() => {
+    if (mode === "login" && !busy) {
+      setCSRFToken();
+    }
+  }, [mode, busy]);
 
   return (
     <div className="auth-page">

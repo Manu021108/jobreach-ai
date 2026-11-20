@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, desc
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, desc
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -309,3 +309,77 @@ class JobNotification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     user: Mapped["User"] = relationship(back_populates="job_notifications")
     alert: Mapped["JobAlert | None"] = relationship(back_populates="notifications")
+
+
+class JobEmbedding(Base):
+    """Vector embeddings for semantic job matching."""
+    __tablename__ = "job_embeddings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"), nullable=False, unique=True, index=True)
+    embedding: Mapped[list[float]] = mapped_column(JSON, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    job: Mapped["JobPosting"] = relationship()
+
+
+class ResumeEmbedding(Base):
+    """Vector embeddings for user resumes."""
+    __tablename__ = "resume_embeddings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    embedding: Mapped[list[float]] = mapped_column(JSON, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), default="")
+    source_text: Mapped[str] = mapped_column(Text, default="")  # Original text used for embedding
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    user: Mapped["User"] = relationship()
+
+
+class EmailTrackingEvent(Base):
+    """Tracking events for email deliverability analytics."""
+    __tablename__ = "email_tracking_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)  # Unique tracking ID
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)  # sent, delivered, bounced, opened, clicked, complained, unsubscribed
+    email_draft_id: Mapped[int | None] = mapped_column(ForeignKey("email_drafts.id"), nullable=True, index=True)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id"), nullable=True, index=True)
+    campaign_id: Mapped[int | None] = mapped_column(ForeignKey("campaigns.id"), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    recipient_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    sender_domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    smtp_response: Mapped[str] = mapped_column(Text, default="")
+    bounce_type: Mapped[str | None] = mapped_column(String(50), nullable=True)  # hard, soft, block, etc.
+    bounce_reason: Mapped[str] = mapped_column(Text, default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    event_metadata: Mapped[str] = mapped_column("metadata", Text, default="")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    # Relationships
+    email_draft: Mapped["EmailDraft | None"] = relationship()
+    contact: Mapped["Contact | None"] = relationship()
+    campaign: Mapped["Campaign | None"] = relationship()
+    user: Mapped["User | None"] = relationship()
+
+
+class DomainReputation(Base):
+    """Domain reputation tracking for deliverability."""
+    __tablename__ = "domain_reputation"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    reputation_score: Mapped[float] = mapped_column(default=0.0)  # -1.0 to 1.0
+    spam_complaint_rate: Mapped[float] = mapped_column(default=0.0)
+    bounce_rate: Mapped[float] = mapped_column(default=0.0)
+    open_rate: Mapped[float] = mapped_column(default=0.0)
+    click_rate: Mapped[float] = mapped_column(default=0.0)
+    total_sent: Mapped[int] = mapped_column(default=0)
+    total_delivered: Mapped[int] = mapped_column(default=0)
+    total_bounced: Mapped[int] = mapped_column(default=0)
+    total_complained: Mapped[int] = mapped_column(default=0)
+    total_opened: Mapped[int] = mapped_column(default=0)
+    total_clicked: Mapped[int] = mapped_column(default=0)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

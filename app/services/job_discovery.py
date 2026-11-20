@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from datetime import datetime, timezone
@@ -11,6 +12,10 @@ from app.utils import company_slug, domain_label, normalize_website, website_fro
 TIMEOUT = 8
 MAX_JOBS = 8
 HEADERS = {"User-Agent": "JobReachAI/1.0 (local job outreach tool)"}
+
+# Semaphore to limit concurrent requests
+_MAX_CONCURRENT_VERIFY = 4
+_verify_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_VERIFY)
 
 
 class _PageParser(HTMLParser):
@@ -224,7 +229,7 @@ def verify_job(url, company, source="careers_page", checked_url=None):
     return job
 
 
-def discover_jobs(contact):
+async def discover_jobs(contact):
     website = normalize_website(contact.website) or website_from_email(contact.email)
     if not website:
         return [], ["No company website found in the contact data; add one on the Job Match page."]
@@ -257,13 +262,22 @@ def discover_jobs(contact):
         for careers_url in _careers_urls(website):
             try:
                 response = _get(careers_url)
-                for href, _label in _job_links(response.text, careers_url):
-                    try:
-                        jobs.append(verify_job(href, contact.company_name, "careers_page", careers_url))
-                    except Exception as exc:
-                        warnings.append(f"Could not verify {href}: {type(exc).__name__}")
-                    if len(jobs) >= MAX_JOBS:
-                        break
+                hrefs = [href for href, _label in _job_links(response.text, careers_url)][:MAX_JOBS]
+
+                # Verify jobs concurrently
+                if hrefs:
+                    tasks = [
+                        _verify_job_async(href, contact.company_name, "careers_page", careers_url)
+                        for href in hrefs
+                    ]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, Exception):
+                            warnings.append(f"Could not verify job: {type(result).__name__}")
+                        else:
+                            jobs.append(result)
+                        if len(jobs) >= MAX_JOBS:
+                            break
             except Exception as exc:
                 warnings.append(f"Careers page {careers_url} unavailable: {type(exc).__name__}")
             if len(jobs) >= MAX_JOBS:

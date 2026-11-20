@@ -186,7 +186,14 @@ def approve_drafts(campaign_id, owner_id, draft_ids):
     return {"approved": approved, "errors": errors[:10]}
 
 
-def queue_campaign(campaign_id, owner_id):
+def queue_campaign(campaign_id, owner_id, stagger_seconds: int = 60):
+    """Queue approved drafts for sending with optional staggering.
+
+    Args:
+        campaign_id: Campaign to queue
+        owner_id: Owner user ID
+        stagger_seconds: Seconds between each scheduled send (default 60)
+    """
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
         campaign = db.get(Campaign, int(campaign_id))
@@ -198,10 +205,11 @@ def queue_campaign(campaign_id, owner_id):
             .where(CampaignContact.campaign_id == campaign.id)
         ).all())
         queued = 0
-        for entry in entries:
+        for i, entry in enumerate(entries):
             if entry.state == "APPROVED" and entry.draft and entry.draft.status == "APPROVED":
                 entry.state = "QUEUED"
-                entry.scheduled_at = now
+                # Stagger sends to respect rate limits
+                entry.scheduled_at = now + timedelta(seconds=stagger_seconds * i)
                 queued += 1
         if not queued:
             raise ValueError("Approve at least one draft before queueing.")

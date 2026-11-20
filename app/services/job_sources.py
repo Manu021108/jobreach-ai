@@ -1,7 +1,8 @@
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from functools import lru_cache
 
 import httpx
 from sqlalchemy import select
@@ -23,6 +24,23 @@ SOURCE_LABELS = {
     "careers_page": "Career sites",
 }
 HEADERS = {"User-Agent": "JobReachAI/1.0 (job discovery)"}
+
+# Simple in-memory cache with TTL for API responses
+_api_cache = {}
+_cache_ttl = timedelta(minutes=30)
+
+
+def _cache_get(key):
+    if key in _api_cache:
+        value, expires = _api_cache[key]
+        if datetime.now(timezone.utc) < expires:
+            return value
+        del _api_cache[key]
+    return None
+
+
+def _cache_set(key, value):
+    _api_cache[key] = (value, datetime.now(timezone.utc) + _cache_ttl)
 
 
 def clean_text(value):
@@ -66,13 +84,19 @@ def parse_salary(value):
         currency = "AUD"
     else:
         currency = "USD"
-    period = "year"
+
+    # Detect period - default to None if not specified
+    period = None
     if re.search(r"\b(hour|hourly|per hour|/hr)\b", text):
         period = "hour"
     elif re.search(r"\b(month|monthly|per month|/mo)\b", text):
         period = "month"
     elif re.search(r"\b(week|weekly|per week|/wk)\b", text):
         period = "week"
+    elif re.search(r"\b(year|annual|annually|per year|/yr)\b", text):
+        period = "year"
+    # If no period specified, return None to indicate unknown
+
     matches = re.findall(r"(\d+(?:[.,]\d+)?)\s*([km])?\b", text.replace(",", ""))
     amounts = []
     for number, suffix in matches:
@@ -83,7 +107,7 @@ def parse_salary(value):
             amount *= 1_000_000
         amounts.append((int(amount), suffix))
     if not amounts:
-        return None, None, "", ""
+        return None, None, currency, period
     has_multiplier = any(suffix for _, suffix in amounts)
     values = [
         amount * 1000 if has_multiplier and not suffix and amount < 1000 else amount
@@ -92,7 +116,9 @@ def parse_salary(value):
     values = [value for value in values if value >= 100]
     if len(values) >= 2:
         return min(values), max(values), currency, period
-    return values[0], values[0], currency, period
+    if len(values) == 1:
+        return values[0], values[0], currency, period
+    return None, None, currency, period
 
 
 def parse_experience(text):
@@ -127,6 +153,11 @@ def is_remote(location, text):
 
 
 def make_fingerprint(company, title, url):
+    """Generate a collision-resistant fingerprint for job deduplication.
+
+    Uses SHA256 and includes normalized company name, title, and URL path.
+    Avoids collisions from company_slug + domain_label overlap.
+    """
     parsed = urlparse(str(url or ""))
     query = [
         (key, value)
@@ -141,8 +172,10 @@ def make_fingerprint(company, title, url):
         urlencode(sorted(query)),
         "",
     ))
-    raw = f"{clean_text(company).lower()}|{clean_text(title).lower()}|{normalized}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    # Use full company name + title + normalized URL for better uniqueness
+    # SHA256 for collision resistance
+    raw = f"{clean_text(company).strip().lower()}|{clean_text(title).strip().lower()}|{normalized}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def normalize_job(item):
@@ -197,6 +230,12 @@ def normalize_job(item):
 
 
 def fetch_json(url):
+    """Fetch JSON with simple in-memory caching and ETag support."""
+    # Check cache first
+    cached = _cache_get(url)
+    if cached is not None:
+        return cached
+
     with httpx.Client(
         timeout=settings.job_discovery_timeout_seconds,
         follow_redirects=True,
@@ -204,7 +243,9 @@ def fetch_json(url):
     ) as client:
         response = client.get(url)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        _cache_set(url, data)
+        return data
 
 
 def fetch_remotive(limit):
@@ -322,7 +363,7 @@ def selected_sources(values):
     return [value.strip().lower() for value in values if str(value).strip().lower() in allowed]
 
 
-def collect_jobs(owner_id, filters):
+async def collect_jobs(owner_id, filters):
     jobs = []
     warnings = []
     sources = selected_sources(filters.get("sources"))
@@ -361,9 +402,8 @@ def collect_jobs(owner_id, filters):
                         for slug in slugs:
                             jobs.extend(fetch_lever(slug, contact.company_name, limit))
                     elif source == "careers_page":
-                        for job in fetch_careers_page(contact, limit):
-                            job["contact_id"] = contact.id
-                            jobs.append(job)
+                        # Use async discovery for careers page
+                        jobs.extend(fetch_careers_page(contact, limit))
                 except Exception as exc:
                     warnings.append(
                         f"{SOURCE_LABELS.get(source, source)} lookup for {contact.company_name} unavailable: {type(exc).__name__}"

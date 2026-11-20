@@ -2,8 +2,10 @@ import hmac
 import html
 import io
 import re
+import secrets
 import tempfile
 import threading
+import time
 from urllib.parse import quote
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -14,8 +16,12 @@ import pandas as pd
 from fastapi import Body, Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.staticfiles import StaticFiles
 
 from app.config import settings
@@ -27,6 +33,7 @@ from app.services import auto_sender
 from app.services import billing as billing_service
 from app.services import campaign as campaign_service
 from app.services import compliance
+from app.services import deliverability as deliverability_service
 from app.services import followups as followup_service
 from app.services import gmail_service, gmail_tokens, hr_database, job_alerts, profile_service
 from app.services import job_discovery_engine
@@ -62,7 +69,6 @@ from app.services.outreach import (
     list_paged_contacts,
     lookup_contacts,
     mark_sent,
-    recent_contacts,
     record_failed,
     save_draft,
     save_jobs,
@@ -74,6 +80,44 @@ from app.services.outreach import (
     update_draft,
     update_job_match,
 )
+from app.services.semantic_matcher import get_semantic_matcher
+
+# CSRF Protection Middleware
+CSRF_COOKIE_NAME = "jr_csrf"
+CSRF_HEADER_NAME = "X-CSRF-Token"
+CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+
+class CSRFMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Skip CSRF for safe methods
+        if request.method in CSRF_SAFE_METHODS:
+            return await call_next(request)
+
+        # Skip CSRF for auth endpoints on initial request (no cookie yet)
+        path = request.url.path
+        if path.startswith("/api/auth/"):
+            # For login/register, just set the cookie and proceed
+            if path in ["/api/auth/login", "/api/auth/register"]:
+                # Ensure cookies are set by the response
+                return await call_next(request)
+            # For other auth endpoints, proceed without CSRF check if no cookie
+            csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+            if not csrf_cookie:
+                return await call_next(request)
+
+        # Get CSRF token from cookie
+        csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+        # Get CSRF token from header
+        csrf_header = request.headers.get(CSRF_HEADER_NAME)
+
+        if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token missing or invalid"}
+            )
+
+        return await call_next(request)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -82,10 +126,26 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="JobReach AI", docs_url=None, redoc_url=None, lifespan=lifespan)
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"],
-)
+
+# Rate Limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# TrustedHostMiddleware - configure for production via env
+# Default allows localhost for dev; override in production
+allowed_hosts = ["localhost", "127.0.0.1", "[::1]", "testserver"]
+if settings.frontend_url and settings.frontend_url not in ["http://127.0.0.1:8000", "http://localhost:8000"]:
+    # Extract host from frontend_url for production
+    from urllib.parse import urlparse
+    parsed = urlparse(settings.frontend_url)
+    if parsed.hostname:
+        allowed_hosts.append(parsed.hostname)
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
+# CSRF Protection
+app.add_middleware(CSRFMiddleware)
 _send_lock = threading.Lock()
 _sent_this_run = 0
 _all_statuses = CONTACT_STATUSES
@@ -403,7 +463,8 @@ def health():
 
 
 @app.post("/api/auth/register")
-def register(payload: RegisterInput):
+@limiter.limit("5/minute")
+def register(request: Request, payload: RegisterInput):
     try:
         user, token, sent = auth_service.register(payload.name, payload.email, payload.password)
     except ValueError as exc:
@@ -419,7 +480,8 @@ def register(payload: RegisterInput):
 
 
 @app.post("/api/auth/verify-email")
-def verify_email(payload: TokenInput):
+@limiter.limit("10/minute")
+def verify_email(request: Request, payload: TokenInput):
     try:
         auth_service.verify_email(payload.token)
     except ValueError as exc:
@@ -428,7 +490,8 @@ def verify_email(payload: TokenInput):
 
 
 @app.post("/api/auth/resend-verification")
-def resend_verification(payload: EmailInput):
+@limiter.limit("3/minute")
+def resend_verification(request: Request, payload: EmailInput):
     _user, token, sent = auth_service.resend_verification(payload.email)
     result = {"message": "If the account exists and is unverified, a new link has been sent."}
     if token and not sent and settings.auth_dev_tokens:
@@ -436,16 +499,28 @@ def resend_verification(payload: EmailInput):
     return result
 
 
+def _generate_csrf_token():
+    return secrets.token_urlsafe(32)
+
+
 @app.post("/api/auth/login")
-def login(payload: LoginInput, response: Response):
+@limiter.limit("10/minute")
+def login(request: Request, payload: LoginInput, response: Response):
     try:
         user = auth_service.authenticate(payload.email, payload.password)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    # Generate CSRF token and set as cookie
+    csrf_token = _generate_csrf_token()
     response.set_cookie(
         "jr_session", make_session(user.id), max_age=SESSION_MAX_AGE,
+        httponly=True, samesite="lax", secure=settings.auth_cookie_secure, path="/",
+    )
+    response.set_cookie(
+        CSRF_COOKIE_NAME, csrf_token, max_age=SESSION_MAX_AGE,
         httponly=True, samesite="lax", secure=settings.auth_cookie_secure, path="/",
     )
     return _user_dict(user)
@@ -454,6 +529,7 @@ def login(payload: LoginInput, response: Response):
 @app.post("/api/auth/logout")
 def logout(response: Response):
     response.delete_cookie("jr_session", path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
     return {"ok": True}
 
 
@@ -463,7 +539,8 @@ def me(user: User = Depends(get_session_user)):
 
 
 @app.post("/api/auth/reset-request")
-def reset_request(payload: EmailInput):
+@limiter.limit("3/minute")
+def reset_request(request: Request, payload: EmailInput):
     _user, token, sent = auth_service.request_reset(payload.email)
     result = {"message": "If the account exists, a reset link has been sent."}
     if token and not sent and settings.auth_dev_tokens:
@@ -472,7 +549,8 @@ def reset_request(payload: EmailInput):
 
 
 @app.post("/api/auth/reset-confirm")
-def reset_confirm(payload: ResetPasswordInput):
+@limiter.limit("5/minute")
+def reset_confirm(request: Request, payload: ResetPasswordInput):
     try:
         auth_service.reset_password(payload.token, payload.password)
     except ValueError as exc:
@@ -706,12 +784,12 @@ def update_website(contact_id: int, payload: WebsiteUpdate, user: User = Depends
 
 
 @app.post("/api/contacts/{contact_id}/jobs/discover")
-def discover_contact_jobs(contact_id: int, user: User = Depends(get_current_user)):
+async def discover_contact_jobs(contact_id: int, user: User = Depends(get_current_user)):
     with SessionLocal() as db:
         contact = db.get(Contact, contact_id)
     if not contact or contact.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Contact not found.")
-    jobs, warnings = discover_jobs(contact)
+    jobs, warnings = await discover_jobs(contact)
     added, _skipped = save_jobs(contact.id, jobs, user.id)
     return {
         "added": added,
@@ -1325,8 +1403,11 @@ def connect_gmail(user: User = Depends(get_current_user)):
 
 @app.post("/api/settings/test-ai")
 def test_ai(user: User = Depends(get_current_user)):
+    writer = AIWriter(profile_service.ai_profile(user.id))
+    if not writer._check_local_llm():
+        raise HTTPException(status_code=503, detail="Local LLM (Ollama) is not available. Please install Ollama and pull the model. Check /api/settings/llm-status for installation guide.")
     try:
-        result = AIWriter(profile_service.ai_profile(user.id)).client.chat.completions.create(
+        result = writer.client.chat.completions.create(
             model=settings.ai_model,
             messages=[{"role": "user", "content": "Reply with the word READY."}],
             max_tokens=10,
@@ -1334,6 +1415,196 @@ def test_ai(user: User = Depends(get_current_user)):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI connection failed: {exc}") from exc
     return {"response": result.choices[0].message.content or ""}
+
+
+@app.get("/api/settings/llm-status")
+def llm_status(user: User = Depends(get_current_user)):
+    """Check local LLM availability and provide installation guidance if unavailable."""
+    writer = AIWriter(profile_service.ai_profile(user.id))
+    available = writer._check_local_llm()
+
+    if available:
+        return {
+            "available": True,
+            "model": settings.ai_model,
+            "base_url": settings.ai_base_url,
+            "message": "Local LLM (Ollama) is running and accessible."
+        }
+
+    # Provide installation guidance based on platform
+    import platform
+    system = platform.system().lower()
+
+    install_guides = {
+        "linux": [
+            "curl -fsSL https://ollama.com/install.sh | sh",
+            "ollama pull " + settings.ai_model,
+            "ollama serve"
+        ],
+        "darwin": [
+            "brew install ollama",
+            "ollama pull " + settings.ai_model,
+            "ollama serve"
+        ],
+        "windows": [
+            "Download installer from https://ollama.com/download",
+            "Run the installer",
+            "Open PowerShell and run: ollama pull " + settings.ai_model,
+            "Run: ollama serve"
+        ]
+    }
+
+    guide = install_guides.get(system, install_guides["linux"])
+
+    return {
+        "available": False,
+        "model": settings.ai_model,
+        "base_url": settings.ai_base_url,
+        "message": "Local LLM (Ollama) is not running or not installed.",
+        "installation_guide": guide,
+        "manual_steps": [
+            "1. Install Ollama from https://ollama.com",
+            "2. Pull the model: ollama pull " + settings.ai_model,
+            "3. Start the server: ollama serve",
+            "4. Verify: curl http://localhost:11434/api/tags"
+        ],
+        "fallback_mode": "Using template-based drafts (limited personalization)"
+    }
+
+
+# ============ Semantic Matching API ============
+
+@app.get("/api/jobs/{job_id}/similar")
+def similar_jobs(job_id: int, limit: int = 10, user: User = Depends(get_current_user)):
+    """Find jobs similar to a given job using semantic embeddings."""
+    matcher = get_semantic_matcher()
+    results = matcher.find_similar_jobs(job_id, limit)
+    return {"similar_jobs": results}
+
+
+@app.get("/api/match/semantic")
+def semantic_match_jobs(limit: int = 50, min_similarity: float = 0.3, user: User = Depends(get_current_user)):
+    """Find jobs matching user's resume using semantic embeddings."""
+    matcher = get_semantic_matcher()
+    results = matcher.match_jobs_for_user(user.id, limit, min_similarity)
+    return {"matches": results}
+
+
+@app.post("/api/admin/rebuild-embeddings")
+def rebuild_embeddings(user: User = Depends(get_current_user)):
+    """Rebuild all job embeddings (admin only)."""
+    if not user.is_verified:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    matcher = get_semantic_matcher()
+    result = matcher.rebuild_all_embeddings()
+    return result
+
+
+# ============ Deliverability Analytics API ============
+
+@app.get("/api/deliverability/stats")
+def deliverability_stats(days: int = 30, user: User = Depends(get_current_user)):
+    """Get deliverability statistics for the current user."""
+    service = get_deliverability_service()
+    stats = service.get_deliverability_stats(user.id, days)
+    return stats
+
+
+@app.get("/api/deliverability/domain-reputations")
+def domain_reputations(limit: int = 50, user: User = Depends(get_current_user)):
+    """Get domain reputations for the current user."""
+    service = get_deliverability_service()
+    reputations = service.get_domain_reputations(user.id, limit)
+    return {"domains": reputations}
+
+
+@app.get("/api/deliverability/domain/{domain}")
+def domain_reputation(domain: str, user: User = Depends(get_current_user)):
+    """Get reputation for a specific domain."""
+    service = get_deliverability_service()
+    rep = service.get_domain_reputation(domain)
+    if not rep:
+        raise HTTPException(status_code=404, detail="Domain not found")
+    return {
+        "domain": rep.domain,
+        "reputation_score": round(rep.reputation_score, 3),
+        "spam_complaint_rate": round(rep.spam_complaint_rate, 4),
+        "bounce_rate": round(rep.bounce_rate, 4),
+        "open_rate": round(rep.open_rate, 4),
+        "click_rate": round(rep.click_rate, 4),
+        "total_sent": rep.total_sent,
+        "total_delivered": rep.total_delivered,
+        "total_bounced": rep.total_bounced,
+        "total_complained": rep.total_complained,
+        "last_checked": rep.last_checked_at.isoformat() if rep.last_checked_at else None,
+    }
+
+
+@app.post("/api/tracking/send")
+def record_send(
+    draft_id: int = Body(...),
+    contact_id: int = Body(...),
+    campaign_id: int | None = Body(None),
+    recipient_email: str = Body(...),
+    sender_domain: str = Body(...),
+    smtp_response: str = Body(default=""),
+    user: User = Depends(get_current_user),
+):
+    """Record an email send for tracking."""
+    service = get_deliverability_service()
+    event = service.record_send(
+        email_draft_id=draft_id,
+        contact_id=contact_id,
+        campaign_id=campaign_id,
+        user_id=user.id,
+        recipient_email=recipient_email,
+        sender_domain=sender_domain,
+        smtp_response=smtp_response,
+    )
+    return {"tracking_id": event.event_id}
+
+
+@app.post("/api/tracking/bounce")
+def record_bounce(
+    tracking_id: str = Body(...),
+    smtp_response: str = Body(...),
+    bounce_reason: str = Body(...),
+    user: User = Depends(get_current_user),
+):
+    """Record a bounce."""
+    service = get_deliverability_service()
+    event = service.record_bounce(tracking_id, smtp_response, bounce_reason)
+    if not event:
+        raise HTTPException(status_code=404, detail="Tracking event not found")
+    return {"status": "recorded", "bounce_type": event.bounce_type}
+
+
+@app.get("/api/track/open/{tracking_id}")
+async def track_open(tracking_id: str, request: Request):
+    """Tracking pixel endpoint for email opens."""
+    service = get_deliverability_service()
+    service.record_open(
+        tracking_id=tracking_id,
+        user_agent=request.headers.get("user-agent", ""),
+        ip_address=request.client.host if request.client else "",
+    )
+    # Return 1x1 transparent pixel
+    from fastapi.responses import Response
+    pixel = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00\x00\x00\x00IEND\xaeB`\x82'
+    return Response(content=pixel, media_type="image/png")
+
+
+@app.get("/api/track/click/{tracking_id}")
+async def track_click(tracking_id: str, url: str, request: Request):
+    """Track click and redirect to destination URL."""
+    service = get_deliverability_service()
+    service.record_click(
+        tracking_id=tracking_id,
+        user_agent=request.headers.get("user-agent", ""),
+        ip_address=request.client.host if request.client else "",
+        metadata={"destination_url": url},
+    )
+    return RedirectResponse(url=url)
 
 
 web_dist = Path(__file__).resolve().parent / "frontend" / "dist"

@@ -12,6 +12,10 @@ import {
   Sparkles,
   Unplug,
   UserRound,
+  AlertCircle,
+  Wifi,
+  WifiOff,
+  ArrowRight,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -19,6 +23,7 @@ import {
   Button,
   ConfirmDialog,
   GlassCard,
+  Modal,
   PageHeader,
   ProgressRing,
   SectionHeading,
@@ -53,6 +58,9 @@ export function Settings() {
   const [testingAi, setTestingAi] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [freeUnlocking, setFreeUnlocking] = useState(false);
+  const [llmStatus, setLlmStatus] = useState(null);
+  const [checkingLlm, setCheckingLlm] = useState(false);
+  const [showLlmGuide, setShowLlmGuide] = useState(false);
 
   useEffect(() => {
     if (!settings) return;
@@ -136,6 +144,27 @@ export function Settings() {
       setFreeUnlocking(false);
     }
   };
+
+  const checkLlmStatus = async () => {
+    setCheckingLlm(true);
+    try {
+      const result = await api("/settings/llm-status");
+      setLlmStatus(result);
+      if (!result.available) {
+        setShowLlmGuide(true);
+      }
+    } catch (error) {
+      notify(error.message, "error");
+    } finally {
+      setCheckingLlm(false);
+    }
+  };
+
+  useEffect(() => {
+    if (tab === "connections") {
+      checkLlmStatus();
+    }
+  }, [tab]);
 
   const profileFields = [form.summary, form.skills, form.target_roles, settings?.resume_name, form.linkedin || form.github, form.location];
   const completeness = Math.round((profileFields.filter(Boolean).length / profileFields.length) * 100);
@@ -280,10 +309,34 @@ export function Settings() {
               <GlassCard>
                 <SectionHeading title="AI provider" description="Used for draft generation and job matching." />
                 <div className="connection-card">
-                  <span className="connection-icon connected"><Bot size={24} /></span>
-                  <div><strong>{settings?.ai_provider || "Configured provider"}</strong><span>{settings?.ai_model || "Model not reported"}</span><small>{settings?.ai_base_url || "Default endpoint"}</small></div>
+                  <span className={`connection-icon ${llmStatus?.available ? "connected" : "disconnected"}`}>
+                    {llmStatus?.available ? <Wifi size={24} /> : <WifiOff size={24} />}
+                  </span>
+                  <div>
+                    <strong>{settings?.ai_provider || "Configured provider"}</strong>
+                    <span>{settings?.ai_model || "Model not reported"}</span>
+                    <small>{settings?.ai_base_url || "Default endpoint"}</small>
+                    {llmStatus !== null && (
+                      <span className={llmStatus.available ? "status-available" : "status-unavailable"}>
+                        {llmStatus.available ? "● Available" : "● Unavailable — using templates"}
+                      </span>
+                    )}
+                  </div>
                   <Button variant="secondary" icon={Sparkles} loading={testingAi} onClick={testAi}>Test connection</Button>
+                  <Button variant="secondary" size="sm" icon={AlertCircle} loading={checkingLlm} onClick={checkLlmStatus}>
+                    {llmStatus === null ? "Check status" : "Refresh"}
+                  </Button>
                 </div>
+                {!llmStatus?.available && llmStatus !== null && (
+                  <div className="llm-unavailable-notice">
+                    <AlertCircle size={18} />
+                    <div>
+                      <strong>Local LLM not available</strong>
+                      <p>{llmStatus.message}</p>
+                      <p className="fallback-notice">Fallback mode: Using template-based drafts with limited personalization.</p>
+                    </div>
+                  </div>
+                )}
               </GlassCard>
 
               <GlassCard>
@@ -358,6 +411,31 @@ export function Settings() {
         tone="danger"
         loading={busy}
       />
+      <Modal
+        open={showLlmGuide}
+        onClose={() => setShowLlmGuide(false)}
+        title="Local LLM Setup Required"
+        description="Ollama is not running. Install it to enable AI-powered draft generation."
+        width="640px"
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setShowLlmGuide(false)}>Close</Button>
+            <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer">
+              <Button icon={ArrowRight}>Download Ollama</Button>
+            </a>
+          </>
+        )}
+      >
+        <div className="llm-guide">
+          <p>Ollama is not installed or not running. Follow these steps:</p>
+          <ol>
+            {llmStatus?.installation_guide?.map((step, i) => (
+              <li key={i}>{step}</li>
+            ))}
+          </ol>
+          <p>After installation, click <strong>Refresh</strong> in the AI provider section to verify the connection.</p>
+        </div>
+      </Modal>
     </div>
   );
 }

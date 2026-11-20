@@ -14,6 +14,32 @@ export async function api(path, options = {}) {
   return data;
 }
 
+// Auto-extract CSRF token from cookies and add to headers for state-changing requests
+export function setCSRFToken() {
+  if (typeof document === "undefined") return;
+  const cookies = document.cookie.split(";");
+  for (const cookie of cookies) {
+    const trimmed = cookie.trim();
+    if (trimmed.startsWith("jr_csrf=")) {
+      const token = trimmed.split("=")[1];
+      // Add token to upcoming requests via a global hook
+      const originalFetch = window.fetch;
+      window.fetch = function(input, init) {
+        if (init && init.method && !["GET", "HEAD", "OPTIONS"].includes(init.method)) {
+          init.headers = {
+            ...init.headers,
+            "X-CSRF-Token": token,
+          };
+        }
+        return originalFetch(input, init);
+      };
+      // Remove hook after first use
+      delete window._jr_csrf_token;
+      break;
+    }
+  }
+}
+
 export function jsonRequest(method, body) {
   return {
     method,

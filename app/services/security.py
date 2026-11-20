@@ -7,7 +7,10 @@ import time
 
 from app.config import settings
 
-SECRET_KEY = settings.auth_secret_key or secrets.token_urlsafe(48)
+# SECURITY: Require AUTH_SECRET_KEY env var; never auto-generate (invalidates sessions on restart)
+if not settings.auth_secret_key:
+    raise RuntimeError("AUTH_SECRET_KEY must be set in environment (.env). Generate with: python -c \"import secrets; print(secrets.token_urlsafe(48))\"")
+SECRET_KEY = settings.auth_secret_key
 SESSION_MAX_AGE = settings.auth_session_days * 24 * 60 * 60
 OAUTH_STATE_MAX_AGE = 10 * 60
 UNSUBSCRIBE_MAX_AGE = 5 * 365 * 24 * 60 * 60

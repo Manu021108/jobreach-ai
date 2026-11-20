@@ -97,11 +97,17 @@ def latest_order(user_id):
     }
 
 
-def create_checkout_session(user_id, email):
+def create_checkout_session(user_id, email, idempotency_key: str | None = None):
     if has_entitlement(user_id):
         raise BillingError("The database is already unlocked.")
     stripe = _client()
     base_url = settings.frontend_url.rstrip("/")
+
+    # Generate idempotency key if not provided
+    if not idempotency_key:
+        import secrets
+        idempotency_key = f"jobreach_unlock_{user_id}_{secrets.token_urlsafe(16)}"
+
     session = stripe.checkout.Session.create(
         mode="payment",
         client_reference_id=str(user_id),
@@ -110,6 +116,7 @@ def create_checkout_session(user_id, email):
         metadata={"user_id": str(user_id), "purpose": HR_DATABASE},
         success_url=f"{base_url}/?unlock=success&session_id={{CHECKOUT_SESSION_ID}}",
         cancel_url=f"{base_url}/?unlock=cancel",
+        idempotency_key=idempotency_key,
     )
     session_id = str(_value(session, "id"))
     with SessionLocal() as db:
@@ -123,7 +130,7 @@ def create_checkout_session(user_id, email):
         order.amount_total = int(_value(session, "amount_total", 0) or 0)
         order.currency = str(_value(session, "currency", "") or "").lower()
         db.commit()
-    return {"url": str(_value(session, "url")), "session_id": session_id}
+    return {"url": str(_value(session, "url")), "session_id": session_id, "idempotency_key": idempotency_key}
 
 
 def verify_webhook(payload, signature_header):
@@ -157,20 +164,50 @@ def handle_webhook(payload, signature_header):
         if event_id and db.get(ProcessedWebhookEvent, event_id):
             return {"duplicate": True, "type": event_type}
 
-        if event_type in PAID_EVENTS:
+        # Handle all payment success events
+        if event_type in PAID_EVENTS or event_type == "payment_intent.succeeded":
+            # For checkout.session.completed, check payment_status
+            # For payment_intent.succeeded, payment is confirmed
             payment_status = str(_value(obj, "payment_status") or "")
-            if payment_status and payment_status != "paid":
+            if event_type != "payment_intent.succeeded" and payment_status and payment_status != "paid":
                 return {"ignored": True, "type": event_type, "reason": "payment is not complete"}
+
             user_id = _user_id_from_session(obj)
-            session_id = str(_value(obj, "id") or "")
-            if not user_id or not session_id:
-                return {"ignored": True, "type": event_type, "reason": "missing user or session"}
-            order = db.scalar(select(PaymentOrder).where(PaymentOrder.stripe_session_id == session_id))
+            if not user_id:
+                # Try to get from payment_intent metadata for payment_intent.succeeded
+                pi_metadata = _value(obj, "metadata") or {}
+                user_id_str = _value(pi_metadata, "user_id") or _value(pi_metadata, "client_reference_id")
+                try:
+                    user_id = int(user_id_str) if user_id_str else None
+                except (TypeError, ValueError):
+                    user_id = None
+
+            session_id = str(_value(obj, "id") or "")  # checkout session id
+            payment_intent_id = str(_value(obj, "payment_intent") or "")  # payment intent id
+
+            if not user_id:
+                return {"ignored": True, "type": event_type, "reason": "missing user"}
+
+            # Find or create order by session_id or payment_intent_id
+            order = None
+            if session_id:
+                order = db.scalar(select(PaymentOrder).where(PaymentOrder.stripe_session_id == session_id))
+            if not order and payment_intent_id:
+                order = db.scalar(select(PaymentOrder).where(PaymentOrder.stripe_payment_intent_id == payment_intent_id))
+
             if not order:
-                order = PaymentOrder(user_id=user_id, stripe_session_id=session_id)
+                order = PaymentOrder(
+                    user_id=user_id,
+                    stripe_session_id=session_id if session_id else None,
+                    stripe_payment_intent_id=payment_intent_id if payment_intent_id else None,
+                )
                 db.add(order)
+
             order.user_id = user_id
-            order.stripe_payment_intent_id = str(_value(obj, "payment_intent") or "") or None
+            if session_id:
+                order.stripe_session_id = session_id
+            if payment_intent_id:
+                order.stripe_payment_intent_id = payment_intent_id
             order.amount_total = int(_value(obj, "amount_total") or 0)
             order.currency = str(_value(obj, "currency") or "").lower()
             order.status = "paid"

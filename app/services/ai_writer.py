@@ -3,6 +3,53 @@ import re
 from openai import OpenAI
 from app.config import settings
 
+# Prompt injection prevention: sanitize user-controlled inputs
+_INJECTION_PATTERNS = [
+    r"ignore\s+(?:previous|above|all)\s+instructions?",
+    r"disregard\s+(?:previous|above|all)\s+instructions?",
+    r"forget\s+(?:previous|above|all)\s+instructions?",
+    r"system\s*:\s*you\s+are",
+    r"assistant\s*:\s*you\s+are",
+    r"<\s*system\s*>",
+    r"<\s*assistant\s*>",
+    r"```\s*(?:system|assistant|user)\s*```",
+    r"###\s*(?:system|assistant|user)\s*###",
+    r"pretend\s+to\s+be",
+    r"act\s+as\s+(?:if\s+you\s+are\s+)?",
+    r"you\s+are\s+now\s+",
+    r"override\s+(?:previous|safety)\s+",
+    r"bypass\s+(?:safety|filter|guard)",
+    r"jailbreak",
+    r"prompt\s+injection",
+    r"reveal\s+(?:your\s+)?(?:system\s+)?prompt",
+    r"what\s+(?:is\s+)?your\s+prompt",
+    r"output\s+(?:your\s+)?(?:system\s+)?prompt",
+    r"print\s+(?:your\s+)?(?:system\s+)?prompt",
+]
+
+
+def sanitize_input(text: str, max_len: int = 10000) -> str:
+    """Sanitize user input to prevent prompt injection."""
+    if not text:
+        return ""
+    # Truncate to max length
+    text = text[:max_len]
+    # Check for injection patterns
+    text_lower = text.lower()
+    for pattern in _INJECTION_PATTERNS:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            # Replace suspicious content with safe placeholder
+            text = re.sub(pattern, "[filtered]", text, flags=re.IGNORECASE)
+    return text
+
+
+def sanitize_job_input(company_context: str, job_description: str) -> tuple[str, str]:
+    """Sanitize job-related inputs."""
+    return (
+        sanitize_input(company_context, max_len=5000),
+        sanitize_input(job_description, max_len=10000),
+    )
+
 EMAIL_STRUCTURE = """
 
 Rewrite the supplied structured_draft into a polished, natural email. Keep the exact same structure and facts:
@@ -193,6 +240,33 @@ class AIWriter:
     def __init__(self, profile=None):
         self.client = OpenAI(base_url=settings.ai_base_url, api_key=settings.ai_api_key)
         self.profile = profile
+        self._local_llm_available = None
+
+    def _check_local_llm(self) -> bool:
+        """Check if local LLM (Ollama) is available."""
+        if self._local_llm_available is not None:
+            return self._local_llm_available
+
+        try:
+            # Try a simple completion to test connectivity
+            self.client.chat.completions.create(
+                model=settings.ai_model,
+                messages=[{"role": "user", "content": "test"}],
+                max_tokens=5,
+                timeout=10
+            )
+            self._local_llm_available = True
+            return True
+        except Exception as e:
+            self._local_llm_available = False
+            return False
+
+    def _get_fallback_draft(self, contact, resume_filename="resume.pdf", mode="general") -> dict:
+        """Generate fallback draft using structured template without AI."""
+        profile = self._profile()
+        mode = mode if mode in MODE_GUIDANCE else "general"
+        draft = _structured_draft(contact, profile, mode)
+        return {"subject": draft["subject"], "body": _finalize_body(draft["body"], profile)}
 
     def _profile(self):
         if self.profile:
@@ -210,41 +284,62 @@ class AIWriter:
         }
 
     def generate(self, contact, resume_filename="resume.pdf", mode="general") -> dict:
+        # Check if local LLM is available
+        if not self._check_local_llm():
+            return self._get_fallback_draft(contact, resume_filename, mode)
+
         profile = self._profile()
         mode = mode if mode in MODE_GUIDANCE else "general"
+
+        # Sanitize user-controlled inputs to prevent prompt injection
+        safe_company_context = sanitize_input(contact.company_context or "", max_len=5000)
+
         draft = _structured_draft(contact, profile, mode)
         target = {
             "structured_draft": draft,
             "company_name": contact.company_name,
             "recipient_name": contact.hr_name or "Hiring Team",
             "target_role": contact.role or "Relevant Opportunities",
-            "verified_company_context_supplied_by_user": contact.company_context or "",
+            "verified_company_context_supplied_by_user": safe_company_context,
             "job_url_supplied_by_user": contact.job_url or "",
             "sender_profile": profile,
             "resume_filename": resume_filename,
             "requested_mode": mode,
             "mode_guidance": MODE_GUIDANCE[mode],
         }
-        response = self.client.chat.completions.create(
-            model=settings.ai_model,
-            temperature=settings.ai_temperature,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(target, ensure_ascii=False)},
-            ],
-        )
-        raw = response.choices[0].message.content or "{}"
-        data = json.loads(raw)
-        subject = _strip_placeholders(str(data.get("subject", "")).strip())[:500] or draft["subject"]
-        body = _strip_placeholders(str(data.get("body", "")).strip())
-        if not _has_structure(body):
-            body = draft["body"]
-        return {"subject": subject, "body": _finalize_body(body, profile)}
+        try:
+            response = self.client.chat.completions.create(
+                model=settings.ai_model,
+                temperature=settings.ai_temperature,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(target, ensure_ascii=False)},
+                ],
+            )
+            raw = response.choices[0].message.content or "{}"
+            data = json.loads(raw)
+            subject = _strip_placeholders(str(data.get("subject", "")).strip())[:500] or draft["subject"]
+            body = _strip_placeholders(str(data.get("body", "")).strip())
+            if not _has_structure(body):
+                body = draft["body"]
+            return {"subject": subject, "body": _finalize_body(body, profile)}
+        except Exception as e:
+            # Fallback to template if AI fails
+            return self._get_fallback_draft(contact, resume_filename, mode)
 
     def generate_for_job(self, contact, job, match=None, resume_filename="resume.pdf") -> dict:
+        # Check if local LLM is available
+        if not self._check_local_llm():
+            return self._get_fallback_draft(contact, resume_filename, "application")
+
         profile = self._profile()
         draft = _structured_draft(contact, profile, "application", job=job)
+
+        # Sanitize user-controlled inputs to prevent prompt injection
+        safe_description = sanitize_input(job.description or "", max_len=10000)
+        safe_company_context = sanitize_input(contact.company_context or "", max_len=5000)
+
         verified_job = {
             "company": job.company_name or contact.company_name,
             "title": job.title,
@@ -253,7 +348,7 @@ class AIWriter:
             "source": job.source,
             "source_url": job.source_url or job.url,
             "active": bool(job.active),
-            "description_excerpt": str(job.description or "")[:1500],
+            "description_excerpt": safe_description[:1500],
             "skill_match": match or {},
         }
         target = {
@@ -264,19 +359,23 @@ class AIWriter:
             "sender_profile": profile,
             "resume_filename": resume_filename,
         }
-        response = self.client.chat.completions.create(
-            model=settings.ai_model,
-            temperature=settings.ai_temperature,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": JOB_SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(target, ensure_ascii=False)},
-            ],
-        )
-        raw = response.choices[0].message.content or "{}"
-        data = json.loads(raw)
-        subject = _strip_placeholders(str(data.get("subject", "")).strip())[:500] or draft["subject"]
-        body = _strip_placeholders(str(data.get("body", "")).strip())
-        if not _has_structure(body):
-            body = draft["body"]
-        return {"subject": subject, "body": _finalize_body(body, profile)}
+        try:
+            response = self.client.chat.completions.create(
+                model=settings.ai_model,
+                temperature=settings.ai_temperature,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": JOB_SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(target, ensure_ascii=False)},
+                ],
+            )
+            raw = response.choices[0].message.content or "{}"
+            data = json.loads(raw)
+            subject = _strip_placeholders(str(data.get("subject", "")).strip())[:500] or draft["subject"]
+            body = _strip_placeholders(str(data.get("body", "")).strip())
+            if not _has_structure(body):
+                body = draft["body"]
+            return {"subject": subject, "body": _finalize_body(body, profile)}
+        except Exception as e:
+            # Fallback to template if AI fails
+            return self._get_fallback_draft(contact, resume_filename, "application")

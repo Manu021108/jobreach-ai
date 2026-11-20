@@ -13,6 +13,8 @@ import {
   Sparkles,
   Target,
   Unlock,
+  TrendingUp,
+  Shield,
 } from "lucide-react";
 
 export const navigation = [
@@ -23,6 +25,7 @@ export const navigation = [
       { id: "companies", label: "Companies", path: "/companies", icon: Building2 },
       { id: "discovery", label: "Job Discovery", path: "/discovery", icon: Search },
       { id: "match", label: "Job Match", path: "/match", icon: Target },
+      { id: "semantic", label: "Semantic Match", path: "/semantic", icon: TrendingUp },
       { id: "studio", label: "AI Email Studio", path: "/studio", icon: Sparkles },
     ],
   },
@@ -39,6 +42,7 @@ export const navigation = [
     items: [
       { id: "analytics", label: "Analytics", path: "/analytics", icon: BarChart3 },
       { id: "activity", label: "Activity", path: "/activity", icon: Activity },
+      { id: "deliverability", label: "Deliverability", path: "/deliverability", icon: Shield },
     ],
   },
   {

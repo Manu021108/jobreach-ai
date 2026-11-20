@@ -589,20 +589,38 @@ def _looks_like_opt_out(text):
     return any(pattern in normalized for pattern in OPT_OUT_PATTERNS)
 
 
+def _extract_email_address(from_header: str) -> str:
+    """Extract email address from a From header like 'Name <email@domain.com>'."""
+    if not from_header:
+        return ""
+    # Handle "Name <email@domain.com>" format
+    if "<" in from_header and ">" in from_header:
+        return from_header.split("<")[-1].split(">")[0].strip().lower()
+    # Handle bare email
+    return from_header.strip().lower()
+
+
 def sync_inbox_best_effort(gmail, owner_id=None):
-    """Best-effort inbox matching for replies and opt-outs. Verify matches manually."""
+    """Best-effort inbox matching for replies and opt-outs. Verify matches manually.
+
+    Improved matching: extracts exact email address from From header and matches
+    against exact contact email, avoiding substring false positives.
+    """
     messages = gmail.list_recent_inbox(100)
     matched = replies = opt_outs = 0
     audit_entries = []
     with SessionLocal() as db:
         stmt = select(Contact).where(Contact.status == "SENT", _owned(Contact, owner_id))
+        # Index contacts by exact email for precise matching
         by_email = {c.email.lower(): c for c in db.scalars(stmt).all()}
         for item in messages:
             try:
                 msg = gmail.get_message(item["id"])
                 headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
-                sender = headers.get("from", "").lower()
-                contact = next((c for addr, c in by_email.items() if addr in sender), None)
+                sender_raw = headers.get("from", "")
+                sender_email = _extract_email_address(sender_raw)
+                # Exact email match only - no substring matching
+                contact = by_email.get(sender_email)
                 if not contact or contact.status != "SENT":
                     continue
                 text = " ".join([

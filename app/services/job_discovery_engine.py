@@ -238,10 +238,10 @@ def persist_jobs(owner_id, jobs):
     return added, updated, skipped
 
 
-def discover_for_owner(owner_id, values):
+async def discover_for_owner(owner_id, values):
     filters = normalize_filters(values)
     profile = profile_service.ai_profile(int(owner_id))
-    raw_jobs, warnings = collect_jobs(int(owner_id), filters)
+    raw_jobs, warnings = await collect_jobs(int(owner_id), filters)
     candidates = []
     for raw_job in raw_jobs:
         job = normalize_job(raw_job)
